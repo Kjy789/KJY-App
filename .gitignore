@@ -1,0 +1,5 @@
+.env
+api.txt
+kjy_inventory.db
+__pycache__/
+*.pyc

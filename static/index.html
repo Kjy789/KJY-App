@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>KJY POS — ร้านคำเจริญเกษตรยนต์</title>
+    <meta name="description" content="ระบบ POS จัดการสต็อกสินค้าและขายหน้าร้าน คำเจริญเกษตรยนต์">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Noto+Sans+Thai:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ================================================================== -->
+<!-- 3-COLUMN LAYWRAP -->
+<!-- ================================================================== -->
+<div class="app-layout">
+
+    <!-- ============= LEFT: SIDEBAR ============= -->
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-brand" onclick="location.reload()">
+            <div class="sb-icon"><i class="fa-solid fa-tractor"></i></div>
+            <span class="sb-label">KJY</span>
+        </div>
+
+        <div class="sidebar-role">
+            <button class="role-switch" id="role-btn" onclick="toggleRole()">
+                <i class="fa-solid fa-user-shield" id="role-icon"></i>
+                <span id="role-label">Staff</span>
+            </button>
+        </div>
+
+        <nav class="sidebar-nav">
+            <button class="nav-item active" id="nav-pos" onclick="switchView('pos')">
+                <i class="fa-solid fa-cash-register"></i>
+                <span>ขาย</span>
+            </button>
+            <button class="nav-item" id="nav-stock" onclick="switchView('stock')">
+                <i class="fa-solid fa-boxes-stacked"></i>
+                <span>คลัง</span>
+            </button>
+            <button class="nav-item owner-only hidden" id="nav-receive" onclick="switchView('receive')">
+                <i class="fa-solid fa-file-invoice-dollar"></i>
+                <span>บิล</span>
+            </button>
+            <button class="nav-item owner-only hidden" id="nav-reports" onclick="switchView('reports')">
+                <i class="fa-solid fa-chart-column"></i>
+                <span>รายงาน</span>
+            </button>
+        </nav>
+    </aside>
+
+    <!-- ============= CENTER: MAIN ============= -->
+    <main class="main" id="main">
+
+        <!-- ---- VIEW: POS ---- -->
+        <section class="view active" id="view-pos">
+            <!-- Search Bar -->
+            <div class="pos-bar">
+                <div class="search-wrap">
+                    <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                    <input type="text" class="search-input" id="pos-search" placeholder="ค้นหาสินค้า / บาร์โค้ด..." oninput="debounceSearch('pos')" autocomplete="off">
+                    <button class="scan-btn" onclick="openScanner('pos')"><i class="fa-solid fa-barcode"></i></button>
+                </div>
+                <!-- Mobile FAB -->
+                <button class="fab" id="cart-fab" onclick="toggleCart()">
+                    <i class="fa-solid fa-cart-shopping"></i>
+                    <span class="fab-badge" id="fab-count">0</span>
+                    <span class="fab-total" id="fab-total">฿0</span>
+                </button>
+            </div>
+
+            <!-- Filter Chips -->
+            <div class="chips">
+                <button class="chip active" onclick="pickCategory('ALL',this)">ทั้งหมด</button>
+                <button class="chip" onclick="pickCategory('น็อต-สกรู',this)">🔩 น็อต-สกรู</button>
+                <button class="chip" onclick="pickCategory('สายพาน',this)">⚙️ สายพาน</button>
+                <button class="chip" onclick="pickCategory('กรองอากาศ',this)">🌀 กรอง</button>
+                <button class="chip" onclick="pickCategory('น้ำมัน',this)">🛢️ น้ำมัน</button>
+                <button class="chip" onclick="pickCategory('ยาง',this)">🔘 ยาง</button>
+                <button class="chip" onclick="pickCategory('อะไหล่เกษตร',this)">🚜 อะไหล่เกษตร</button>
+            </div>
+
+            <!-- Product Grid -->
+            <div class="grid-wrap">
+                <div class="product-grid" id="product-grid">
+                    <div class="grid-msg"><i class="fa-solid fa-spinner fa-spin"></i><p>กำลังโหลดสินค้า...</p></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ---- VIEW: STOCK ---- -->
+        <section class="view" id="view-stock">
+            <div class="view-head">
+                <div>
+                    <h2><i class="fa-solid fa-boxes-stacked"></i> คลังสินค้า</h2>
+                    <p class="sub">จัดการสต็อก เพิ่มสินค้าใหม่ ค้นหาตำแหน่ง</p>
+                </div>
+                <button class="btn-primary" onclick="openAddProduct()"><i class="fa-solid fa-plus"></i> เพิ่มสินค้า</button>
+            </div>
+            <div class="search-bar">
+                <div class="search-wrap wide">
+                    <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                    <input type="text" class="search-input" id="stock-search" placeholder="ค้นหาชื่อ, SKU, หมวดหมู่..." oninput="debounceSearch('stock')" autocomplete="off">
+                    <button class="scan-btn" onclick="openScanner('stock')"><i class="fa-solid fa-barcode"></i></button>
+                </div>
+            </div>
+            <div class="table-card">
+                <div class="table-scroll">
+                    <table class="data-table">
+                        <thead><tr><th>สินค้า</th><th>หมวดหมู่</th><th>ตำแหน่ง</th><th class="c">สต็อก</th><th class="r">ราคาขาย</th><th class="c">รูป</th><th class="c">เพิ่ม</th></tr></thead>
+                        <tbody id="stock-body"><tr><td colspan="7" class="empty">กำลังโหลด...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ---- VIEW: RECEIVE (Owner: Bill OCR) ---- -->
+        <section class="view owner-only hidden" id="view-receive">
+            <div class="view-head">
+                <div>
+                    <h2><i class="fa-solid fa-file-invoice-dollar"></i> สแกนบิลรับของ</h2>
+                    <p class="sub">ถ่ายรูปบิลซัพพลายเออร์ — AI สแกนรายการและต้นทุนอัตโนมัติ</p>
+                </div>
+            </div>
+            <div class="ocr-area">
+                <div class="dropzone" id="dropzone" onclick="document.getElementById('receipt-input').click()">
+                    <i class="fa-solid fa-cloud-arrow-up"></i>
+                    <p class="drop-title">แตะเพื่อถ่ายรูปบิล หรือเลือกไฟล์</p>
+                    <small>JPG, PNG</small>
+                    <input type="file" id="receipt-input" accept="image/*" capture="environment" class="hidden" onchange="handleReceiptUpload(event)">
+                </div>
+                <div id="ocr-loading" class="ocr-status hidden">
+                    <div class="spinner"></div>
+                    <span>AI กำลังประมวลผลบิล...</span>
+                </div>
+                <div id="ocr-result" class="hidden">
+                    <h4><i class="fa-solid fa-circle-check" style="color:#10B981"></i> ผลลัพธ์จาก AI OCR</h4>
+                    <div class="table-scroll compact"><table class="data-table"><thead><tr><th>สินค้า</th><th class="r">จำนวน</th><th class="r">ต้นทุน/ชิ้น</th><th class="r">รวม</th></tr></thead><tbody id="ocr-body"></tbody></table></div>
+                    <div class="ocr-actions"><button class="btn-green" onclick="confirmOcr()"><i class="fa-solid fa-check"></i> บันทึกเข้าระบบ</button><button class="btn-outline" onclick="resetOcr()"><i class="fa-solid fa-rotate-right"></i> สแกนใหม่</button></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ---- VIEW: REPORTS (Owner: Finance) ---- -->
+        <section class="view owner-only hidden" id="view-reports">
+            <div class="view-head">
+                <div>
+                    <h2><i class="fa-solid fa-chart-column"></i> รายงานและการเงิน</h2>
+                    <p class="sub">วิเคราะห์ต้นทุน กำไร มูลค่า และสต็อกต่ำ</p>
+                </div>
+                <div class="hstack">
+                    <a href="/api/owner/export-excel" class="btn-green"><i class="fa-solid fa-file-excel"></i> Excel</a>
+                    <a href="/api/owner/export-csv" class="btn-outline"><i class="fa-solid fa-file-csv"></i> CSV</a>
+                </div>
+            </div>
+            <div class="stats">
+                <div class="stat-card blue"><div class="stat-icon"><i class="fa-solid fa-warehouse"></i></div><div><small>มูลค่ารวม (ต้นทุน)</small><h3 id="stat-cost">฿0</h3></div></div>
+                <div class="stat-card indigo"><div class="stat-icon"><i class="fa-solid fa-tags"></i></div><div><small>มูลค่ารวม (ขาย)</small><h3 id="stat-sale">฿0</h3></div></div>
+                <div class="stat-card green"><div class="stat-icon"><i class="fa-solid fa-money-bill-trend-up"></i></div><div><small>กำไรคาดการณ์</small><h3 id="stat-profit">฿0</h3></div></div>
+                <div class="stat-card red"><div class="stat-icon"><i class="fa-solid fa-triangle-exclamation"></i></div><div><small>สต็อกต่ำ</small><h3 id="stat-low">0</h3></div></div>
+            </div>
+            <div class="table-card">
+                <div class="table-head"><h3>วิเคราะห์กำไรรายสินค้า</h3>
+                    <div class="mini-search"><i class="fa-solid fa-magnifying-glass"></i><input type="text" id="owner-search" placeholder="ค้นหา..." oninput="debounceSearch('owner')"></div>
+                </div>
+                <div class="table-scroll">
+                    <table class="data-table"><thead><tr><th>สินค้า</th><th class="c">สต็อก</th><th class="r">ต้นทุน</th><th class="r">ราคาขาย</th><th class="r">กำไร/ชิ้น</th><th class="r">% กำไร</th><th class="r">มูลค่ารวม</th></tr></thead><tbody id="owner-body"><tr><td colspan="7" class="empty">กำลังโหลด...</td></tr></tbody></table>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- ============= RIGHT: CART PANEL (Desktop) ============= -->
+    <aside class="cart-panel" id="cart-panel">
+        <div class="cart-head">
+            <div class="cart-head-left">
+                <i class="fa-solid fa-receipt"></i>
+                <div>
+                    <h3>คำสั่งซื้อ</h3>
+                    <p class="cart-date" id="cart-date"></p>
+                </div>
+            </div>
+            <button class="cart-clear" onclick="clearCart()" title="ล้างรายการ"><i class="fa-solid fa-trash-can"></i></button>
+        </div>
+
+        <div class="cart-items" id="cart-items">
+            <div class="cart-empty"><i class="fa-regular fa-face-smile-wink"></i><p>เลือกสินค้าเพื่อเพิ่มลงตะกร้า</p></div>
+        </div>
+
+        <div class="cart-footer">
+            <div class="cart-summary">
+                <div class="summary-row"><span>ยอดรวมสินค้า</span><span class="summary-val" id="cart-subtotal">฿0.00</span></div>
+                <div class="summary-row"><span>ส่วนลด</span><span class="summary-val" id="cart-discount">฿0.00</span></div>
+                <div class="summary-row total"><span>ยอดสุทธิ</span><span class="total-val" id="cart-total">฿0.00</span></div>
+            </div>
+            <button class="btn-pay" id="btn-pay" onclick="openCheckout()" disabled>
+                <i class="fa-solid fa-circle-dollar-to-slot"></i> ชำระเงิน
+            </button>
+        </div>
+    </aside>
+
+    <!-- Mobile Cart Drawer -->
+    <div class="drawer-overlay hidden" id="drawer-overlay" onclick="toggleCart()"></div>
+    <div class="cart-drawer" id="cart-drawer">
+        <div class="drawer-handle"></div>
+        <div class="cart-head">
+            <div class="cart-head-left"><i class="fa-solid fa-receipt"></i><div><h3>คำสั่งซื้อ</h3><p class="cart-date" id="cart-date-m"></p></div></div>
+            <button class="cart-clear" onclick="clearCart()"><i class="fa-solid fa-trash-can"></i></button>
+        </div>
+        <div class="cart-items" id="cart-items-m">
+            <div class="cart-empty"><i class="fa-regular fa-face-smile-wink"></i><p>เลือกสินค้าด้านบน</p></div>
+        </div>
+        <div class="cart-footer">
+            <div class="cart-summary">
+                <div class="summary-row"><span>ยอดรวมสินค้า</span><span class="summary-val" id="cart-subtotal-m">฿0.00</span></div>
+                <div class="summary-row"><span>ส่วนลด</span><span class="summary-val" id="cart-discount-m">฿0.00</span></div>
+                <div class="summary-row total"><span>ยอดสุทธิ</span><span class="total-val" id="cart-total-m">฿0.00</span></div>
+            </div>
+            <button class="btn-pay" id="btn-pay-m" onclick="openCheckout()" disabled><i class="fa-solid fa-circle-dollar-to-slot"></i> ชำระเงิน</button>
+        </div>
+    </div>
+
+    <!-- Mobile Bottom Nav -->
+    <nav class="bottom-nav">
+        <button class="bot-btn active" id="bn-pos" onclick="switchView('pos')"><i class="fa-solid fa-cash-register"></i><span>ขาย</span></button>
+        <button class="bot-btn" id="bn-stock" onclick="switchView('stock')"><i class="fa-solid fa-boxes-stacked"></i><span>คลัง</span></button>
+        <button class="bot-btn owner-only hidden" id="bn-receive" onclick="switchView('receive')"><i class="fa-solid fa-file-invoice-dollar"></i><span>บิล</span></button>
+        <button class="bot-btn owner-only hidden" id="bn-reports" onclick="switchView('reports')"><i class="fa-solid fa-chart-column"></i><span>รายงาน</span></button>
+        <button class="bot-btn" id="bn-role" onclick="toggleRole()"><i class="fa-solid fa-user-shield" id="role-icon-bot"></i><span id="role-label-bot">Staff</span></button>
+    </nav>
+</div>
+
+<!-- ================================================================== -->
+<!-- MODALS -->
+<!-- ================================================================== -->
+
+<!-- Checkout Modal -->
+<div class="modal-overlay hidden" id="modal-checkout">
+    <div class="modal medium">
+        <div class="modal-head"><h3><i class="fa-solid fa-cash-register"></i> ชำระเงิน</h3><button class="close" onclick="closeModal('modal-checkout')">&times;</button></div>
+        <div class="modal-body">
+            <div class="checkout-hero">
+                <small>ยอดรวมสุทธิ</small>
+                <h2 id="ck-total">฿0.00</h2>
+                <p id="ck-count">0 รายการ</p>
+            </div>
+            <div class="ck-preview" id="ck-preview"></div>
+            <div class="pay-tabs">
+                <button class="p-tab active" id="ptab-cash" onclick="switchPay('cash')"><i class="fa-solid fa-money-bill-wave"></i> เงินสด</button>
+                <button class="p-tab" id="ptab-qr" onclick="switchPay('qr')"><i class="fa-solid fa-qrcode"></i> QR / PromptPay</button>
+            </div>
+            <div id="pay-cash">
+                <div class="form-group"><label>รับเงินมา (บาท)</label><input type="number" id="cash-in" min="0" step="1" placeholder="0" oninput="calcChange()" class="input-lg"></div>
+                <div class="presets">
+                    <button onclick="setExact()" class="pre">พอดี</button>
+                    <button onclick="addPre(20)" class="pre">+20</button>
+                    <button onclick="addPre(50)" class="pre">+50</button>
+                    <button onclick="addPre(100)" class="pre">+100</button>
+                    <button onclick="addPre(500)" class="pre">+500</button>
+                    <button onclick="addPre(1000)" class="pre">+1,000</button>
+                </div>
+                <div class="change-box"><span>เงินทอน</span><span id="change-val">฿0.00</span></div>
+            </div>
+            <div id="pay-qr" class="hidden">
+                <div class="qr-wrap"><img src="/static/promptpay_qr.jpg" alt="QR PromptPay" class="qr-img" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22240%22 height=%22240%22 viewBox=%220 0 240 240%22%3E%3Crect width=%22240%22 height=%22240%22 fill=%22%23F1F5F9%22/%3E%3Ctext x=%22120%22 y=%22120%22 text-anchor=%22middle%22 fill=%22%239CA3AF%22 font-size=%2214%22 font-family=%22sans-serif%22%3EPromptPay QR%3C/text%3E%3C/svg%3E'"></div>
+                <div class="qr-label"><p>สแกนจ่าย</p><h3 id="qr-amount">฿0.00</h3></div>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn-outline" onclick="closeModal('modal-checkout')">ยกเลิก</button>
+            <button class="btn-green btn-lg" id="ck-submit" onclick="submitCheckout()"><i class="fa-solid fa-circle-check"></i> บันทึกการขาย</button>
+        </div>
+    </div>
+</div>
+
+<!-- Add Product Modal -->
+<div class="modal-overlay hidden" id="modal-add">
+    <div class="modal large">
+        <div class="modal-head"><h3><i class="fa-solid fa-plus-circle"></i> เพิ่มสินค้าใหม่</h3><button class="close" onclick="closeModal('modal-add')">&times;</button></div>
+        <div class="modal-body">
+            <div class="photo-grid">
+                <div class="photo-zone" onclick="document.getElementById('fi-prod').click()">
+                    <div id="ph-prod" class="ph"><i class="fa-solid fa-camera"></i><p>รูปสินค้า</p><small>แตะถ่าย</small></div>
+                    <img id="img-prod" class="ph-img hidden" alt="">
+                    <input type="file" id="fi-prod" accept="image/*" capture="environment" class="hidden" onchange="onProdImg(event)">
+                </div>
+                <div class="photo-zone" onclick="document.getElementById('fi-loc').click()">
+                    <div id="ph-loc" class="ph"><i class="fa-solid fa-location-dot"></i><p>รูปตำแหน่ง</p><small>แตะถ่าย</small></div>
+                    <img id="img-loc" class="ph-img hidden" alt="">
+                    <input type="file" id="fi-loc" accept="image/*" capture="environment" class="hidden" onchange="onLocImg(event)">
+                </div>
+            </div>
+            <div id="ai-bar" class="ai-bar hidden"><div class="spinner-sm"></div><span>AI กำลังวิเคราะห์รูป...</span></div>
+            <form id="form-add" onsubmit="submitAdd(event)" class="add-form">
+                <div class="form-group"><label>ชื่อสินค้า <b class="req">*</b></label><input id="a-name" required placeholder="น็อตหกเหลี่ยม M10" class="input"></div>
+                <div class="row-2">
+                    <div class="form-group"><label>หมวดหมู่</label><input id="a-cat" placeholder="น็อต-สกรู" class="input" list="cat-list"><datalist id="cat-list"><option value="น็อต-สกรู"><option value="สายพาน"><option value="กรองอากาศ"><option value="น้ำมัน"><option value="ยาง"><option value="อะไหล่เกษตร"></datalist></div>
+                    <div class="form-group"><label>SKU / บาร์โค้ด</label><div class="input-scan"><input id="a-sku" placeholder="NUT-M10" class="input"><button type="button" class="scan-sm" onclick="openScanner('sku')"><i class="fa-solid fa-barcode"></i></button></div></div>
+                </div>
+                <div class="row-3">
+                    <div class="form-group"><label>สต็อก <b class="req">*</b></label><input id="a-qty" type="number" min="0" value="1" required class="input"></div>
+                    <div class="form-group"><label>ตำแหน่ง</label><input id="a-loc" placeholder="A-01-05" class="input"></div>
+                    <div class="form-group"><label>ราคาขาย ฿</label><input id="a-price" type="number" step="0.01" min="0" placeholder="0" class="input"></div>
+                </div>
+            </form>
+        </div>
+        <div class="modal-foot">
+            <button class="btn-outline" onclick="closeModal('modal-add')">ยกเลิก</button>
+            <button class="btn-primary" id="btn-add-submit" onclick="document.getElementById('form-add').requestSubmit()"><i class="fa-solid fa-floppy-disk"></i> บันทึก</button>
+        </div>
+    </div>
+</div>
+
+<!-- Location Photo Viewer -->
+<div class="modal-overlay hidden" id="modal-loc">
+    <div class="modal small">
+        <div class="modal-head"><h3 id="loc-title"><i class="fa-solid fa-image"></i> ตำแหน่งสินค้า</h3><button class="close" onclick="closeModal('modal-loc')">&times;</button></div>
+        <div class="modal-body center"><img id="loc-img" src="" class="loc-img" alt=""><p id="loc-code" class="loc-badge"></p></div>
+    </div>
+</div>
+
+<!-- Barcode Scanner -->
+<div class="modal-overlay hidden" id="modal-scan">
+    <div class="modal small">
+        <div class="modal-head"><h3><i class="fa-solid fa-barcode"></i> สแกนบาร์โค้ด</h3><button class="close" onclick="closeScanner()">&times;</button></div>
+        <div class="modal-body"><div id="reader" class="reader"></div><p class="hint">จ่อกล้องที่บาร์โค้ดสินค้า</p></div>
+    </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast hidden"><i id="toast-icon" class="fa-solid fa-circle-check"></i><span id="toast-msg">OK</span></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
