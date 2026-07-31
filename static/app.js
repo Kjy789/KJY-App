@@ -1359,7 +1359,25 @@ toggleRole = function() {
 // ==========================================================================
 
 function openEditProduct(productId) {
+    // Reset edit state variables
+    editProdImageFile = null;
+    editProdImageBase64 = null;
+    editLocImageFile = null;
+    editLocImageBase64 = null;
+    editExistingImageUrl = '';   // Store current image URL for fallback
+    editExistingLocImageUrl = ''; // Store current location image URL
+
     openModal('modal-edit');
+
+    // Reset UI: show placeholders, hide images
+    var imgProd = document.getElementById('img-edit-prod');
+    var imgLoc = document.getElementById('img-edit-loc');
+    var phProd = document.getElementById('ph-edit-prod');
+    var phLoc = document.getElementById('ph-edit-loc');
+    if (imgProd) { imgProd.classList.add('hidden'); imgProd.src = ''; }
+    if (imgLoc) { imgLoc.classList.add('hidden'); imgLoc.src = ''; }
+    if (phProd) phProd.classList.remove('hidden');
+    if (phLoc) phLoc.classList.remove('hidden');
 
     // Fetch product data
     fetch('/api/staff/products/' + productId)
@@ -1377,20 +1395,32 @@ function openEditProduct(productId) {
             document.getElementById('e-desc').value = p.description || '';
             document.getElementById('edit-title').textContent = '- ' + (p.name || '');
 
-            // Set image previews
+            // Store existing image URLs for fallback when saving
+            editExistingImageUrl = p.image_path || p.image_url || '';
+            editExistingLocImageUrl = p.location_image_path || p.location_image_url || '';
+
+            // Set image previews with onerror fallback
             var imgProd = document.getElementById('img-edit-prod');
             var imgLoc = document.getElementById('img-edit-loc');
             var phProd = document.getElementById('ph-edit-prod');
             var phLoc = document.getElementById('ph-edit-loc');
 
-            if (p.image_path || p.image_url) {
-                imgProd.src = p.image_path || p.image_url || '';
+            if (editExistingImageUrl) {
+                imgProd.src = editExistingImageUrl;
                 imgProd.classList.remove('hidden');
+                imgProd.onerror = function() {
+                    this.classList.add('hidden');
+                    if (phProd) phProd.classList.remove('hidden');
+                };
                 if (phProd) phProd.classList.add('hidden');
             }
-            if (p.location_image_path || p.location_image_url) {
-                imgLoc.src = p.location_image_path || p.location_image_url || '';
+            if (editExistingLocImageUrl) {
+                imgLoc.src = editExistingLocImageUrl;
                 imgLoc.classList.remove('hidden');
+                imgLoc.onerror = function() {
+                    this.classList.add('hidden');
+                    if (phLoc) phLoc.classList.remove('hidden');
+                };
                 if (phLoc) phLoc.classList.add('hidden');
             }
         })
@@ -1404,6 +1434,8 @@ var editProdImageFile = null;
 var editProdImageBase64 = null;
 var editLocImageFile = null;
 var editLocImageBase64 = null;
+var editExistingImageUrl = '';   // Stores current product image URL from DB
+var editExistingLocImageUrl = ''; // Stores current location image URL from DB
 
 function onEditProdImg(event) {
     var file = event.target.files[0];
@@ -1469,10 +1501,11 @@ async function submitEdit(event) {
     submitBtn.innerHTML = '<span class="spinner-sm"></span> กำลังบันทึก...';
 
     try {
-        // Upload Base64 images first to get permanent URLs
-        var imageUrl = '';
-        var locationImageUrl = '';
+        // Upload Base64 images first to get permanent URLs, or keep existing ones
+        var imageUrl = editExistingImageUrl;  // Default to existing image URL
+        var locationImageUrl = editExistingLocImageUrl; // Default to existing location image URL
 
+        // If user selected a new product image, upload it
         if (editProdImageBase64) {
             try {
                 var imgRes = await fetch('/api/upload/image-base64', {
@@ -1482,11 +1515,12 @@ async function submitEdit(event) {
                 });
                 if (imgRes.ok) {
                     var imgData = await imgRes.json();
-                    imageUrl = imgData.url || '';
+                    imageUrl = imgData.url || imageUrl;
                 }
             } catch (e) { console.warn('Edit image upload failed:', e); }
         }
 
+        // If user selected a new location image, upload it
         if (editLocImageBase64) {
             try {
                 var locRes = await fetch('/api/upload/image-base64', {
@@ -1496,7 +1530,7 @@ async function submitEdit(event) {
                 });
                 if (locRes.ok) {
                     var locData = await locRes.json();
-                    locationImageUrl = locData.url || '';
+                    locationImageUrl = locData.url || locationImageUrl;
                 }
             } catch (e) { console.warn('Edit location image upload failed:', e); }
         }
@@ -1511,8 +1545,9 @@ async function submitEdit(event) {
         formData.append('location', location);
         formData.append('description', desc);
         formData.append('sale_price', price);
-        if (imageUrl) formData.append('image_path', imageUrl);
-        if (locationImageUrl) formData.append('location_image_path', locationImageUrl);
+        // Always send image URLs - if no new image, send existing URL to preserve it
+        formData.append('image_path', imageUrl);
+        formData.append('location_image_path', locationImageUrl);
 
         var res = await fetch('/api/staff/products/' + id + '/edit', {
             method: 'POST',
