@@ -269,19 +269,22 @@ async def add_product_direct(
     stock_qty: int = Form(0),
     location_code: str = Form(None),
     sku: str = Form(None),
+    image_path: str = Form(None),
+    location_image_path: str = Form(None),
     file: UploadFile = File(None),
     location_file: UploadFile = File(None),
 ):
     """
     Staff เพิ่มสินค้าใหม่เข้าคลัง (รวมรูปสินค้า + รูปถ่ายตำแหน่งในโกดัง)
+    รองรับทั้งอัปโหลดไฟล์ตรง (file) และส่ง URL ที่อัปโหลดแล้ว (image_path)
     """
-    image_url = None
+    final_image_url = image_path
     if file and file.filename:
-        image_url = await save_uploaded_file(file, PRODUCT_IMAGES_DIR, prefix="prod")
+        final_image_url = await save_uploaded_file(file, PRODUCT_IMAGES_DIR, prefix="prod")
 
-    location_image_url = None
+    final_location_image_url = location_image_path
     if location_file and location_file.filename:
-        location_image_url = await save_uploaded_file(location_file, LOCATION_IMAGES_DIR, prefix="loc")
+        final_location_image_url = await save_uploaded_file(location_file, LOCATION_IMAGES_DIR, prefix="loc")
 
     product_id = crud.add_product_staff(
         name=name,
@@ -289,8 +292,8 @@ async def add_product_direct(
         category=category,
         sku=sku,
         location_code=location_code,
-        image_path=image_url,
-        location_image_path=location_image_url,
+        image_path=final_image_url,
+        location_image_path=final_location_image_url,
         stock_qty=stock_qty,
     )
     return {"status": "ok", "product_id": product_id, "name": name}
@@ -305,6 +308,8 @@ async def update_product_staff_route(
     stock_qty: int = Form(None),
     location_code: str = Form(None),
     sku: str = Form(None),
+    image_path: str = Form(None),
+    location_image_path: str = Form(None),
     file: UploadFile = File(None),
     location_file: UploadFile = File(None),
 ):
@@ -317,6 +322,13 @@ async def update_product_staff_route(
     if location_code is not None: update_data["location_code"] = location_code
     if sku is not None: update_data["sku"] = sku
 
+    # Accept pre-uploaded image URL
+    if image_path is not None:
+        update_data["image_path"] = image_path
+    if location_image_path is not None:
+        update_data["location_image_path"] = location_image_path
+
+    # Also accept direct file upload (overrides pre-uploaded URL)
     if file and file.filename:
         update_data["image_path"] = await save_uploaded_file(file, PRODUCT_IMAGES_DIR, prefix="prod")
     if location_file and location_file.filename:

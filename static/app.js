@@ -23,8 +23,10 @@ let cart = [];
 let cartProductMap = {};
 let barcodeScannerCtx = 'pos';
 let html5QrcodeScanner = null;
-let prodImageFile = null;
+let prodImageFile = null;        // Raw File object for AI scan
+let prodImageBase64 = null;      // Base64 Data URL for upload
 let locImageFile = null;
+let locImageBase64 = null;       // Base64 Data URL for location image
 let ocrReceiptData = null;
 let searchTimerPOS = null;
 let searchTimerStock = null;
@@ -788,7 +790,9 @@ async function loadOwnerReports(keyword) {
 
 function openAddProduct() {
     prodImageFile = null;
+    prodImageBase64 = null;
     locImageFile = null;
+    locImageBase64 = null;
 
     var prodPh = document.getElementById('ph-prod');
     var prodImg = document.getElementById('img-prod');
@@ -817,12 +821,15 @@ function onProdImg(event) {
     var file = event.target.files[0];
     if (!file) return;
     prodImageFile = file;
+    prodImageBase64 = null; // Reset, will be set after FileReader loads
 
     var reader = new FileReader();
     reader.onload = function(e) {
+        var dataUrl = e.target.result;
+        prodImageBase64 = dataUrl; // Store Base64 Data URL for upload
         var preview = document.getElementById('img-prod');
         if (preview) {
-            preview.src = e.target.result;
+            preview.src = dataUrl;
             preview.classList.remove('hidden');
         }
         var ph = document.getElementById('ph-prod');
@@ -869,12 +876,15 @@ function onLocImg(event) {
     var file = event.target.files[0];
     if (!file) return;
     locImageFile = file;
+    locImageBase64 = null;
 
     var reader = new FileReader();
     reader.onload = function(e) {
+        var dataUrl = e.target.result;
+        locImageBase64 = dataUrl; // Store Base64 Data URL for upload
         var preview = document.getElementById('img-loc');
         if (preview) {
-            preview.src = e.target.result;
+            preview.src = dataUrl;
             preview.classList.remove('hidden');
         }
         var ph = document.getElementById('ph-loc');
@@ -905,6 +915,38 @@ async function submitAdd(event) {
     submitBtn.innerHTML = '<span class="spinner-sm"></span> กำลังบันทึก...';
 
     try {
+        // Upload Base64 images first to get permanent URLs, then include in form data
+        var imageUrl = '';
+        var locationImageUrl = '';
+
+        if (prodImageBase64) {
+            try {
+                var imgRes = await fetch('/api/upload/image-base64', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ data_url: prodImageBase64, prefix: 'prod', folder: 'products' })
+                });
+                if (imgRes.ok) {
+                    var imgData = await imgRes.json();
+                    imageUrl = imgData.url || '';
+                }
+            } catch (e) { console.warn('Image upload failed:', e); }
+        }
+
+        if (locImageBase64) {
+            try {
+                var locRes = await fetch('/api/upload/image-base64', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ data_url: locImageBase64, prefix: 'loc', folder: 'locations' })
+                });
+                if (locRes.ok) {
+                    var locData = await locRes.json();
+                    locationImageUrl = locData.url || '';
+                }
+            } catch (e) { console.warn('Location image upload failed:', e); }
+        }
+
         var formData = new FormData();
         formData.append('name', name);
         formData.append('category', category);
@@ -912,8 +954,8 @@ async function submitAdd(event) {
         formData.append('stock_qty', stock);
         formData.append('location_code', location);
         formData.append('sale_price', price);
-        if (prodImageFile) formData.append('file', prodImageFile);
-        if (locImageFile) formData.append('location_file', locImageFile);
+        if (imageUrl) formData.append('image_path', imageUrl);
+        if (locationImageUrl) formData.append('location_image_path', locationImageUrl);
 
         var res = await fetch('/api/staff/products/add', { method: 'POST', body: formData });
         if (!res.ok) {
@@ -1359,17 +1401,22 @@ function openEditProduct(productId) {
 }
 
 var editProdImageFile = null;
+var editProdImageBase64 = null;
 var editLocImageFile = null;
+var editLocImageBase64 = null;
 
 function onEditProdImg(event) {
     var file = event.target.files[0];
     if (!file) return;
     editProdImageFile = file;
+    editProdImageBase64 = null;
     var reader = new FileReader();
     reader.onload = function(e) {
+        var dataUrl = e.target.result;
+        editProdImageBase64 = dataUrl;
         var preview = document.getElementById('img-edit-prod');
         if (preview) {
-            preview.src = e.target.result;
+            preview.src = dataUrl;
             preview.classList.remove('hidden');
         }
         var ph = document.getElementById('ph-edit-prod');
@@ -1382,11 +1429,14 @@ function onEditLocImg(event) {
     var file = event.target.files[0];
     if (!file) return;
     editLocImageFile = file;
+    editLocImageBase64 = null;
     var reader = new FileReader();
     reader.onload = function(e) {
+        var dataUrl = e.target.result;
+        editLocImageBase64 = dataUrl;
         var preview = document.getElementById('img-edit-loc');
         if (preview) {
-            preview.src = e.target.result;
+            preview.src = dataUrl;
             preview.classList.remove('hidden');
         }
         var ph = document.getElementById('ph-edit-loc');
@@ -1419,6 +1469,38 @@ async function submitEdit(event) {
     submitBtn.innerHTML = '<span class="spinner-sm"></span> กำลังบันทึก...';
 
     try {
+        // Upload Base64 images first to get permanent URLs
+        var imageUrl = '';
+        var locationImageUrl = '';
+
+        if (editProdImageBase64) {
+            try {
+                var imgRes = await fetch('/api/upload/image-base64', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ data_url: editProdImageBase64, prefix: 'prod', folder: 'products' })
+                });
+                if (imgRes.ok) {
+                    var imgData = await imgRes.json();
+                    imageUrl = imgData.url || '';
+                }
+            } catch (e) { console.warn('Edit image upload failed:', e); }
+        }
+
+        if (editLocImageBase64) {
+            try {
+                var locRes = await fetch('/api/upload/image-base64', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ data_url: editLocImageBase64, prefix: 'loc', folder: 'locations' })
+                });
+                if (locRes.ok) {
+                    var locData = await locRes.json();
+                    locationImageUrl = locData.url || '';
+                }
+            } catch (e) { console.warn('Edit location image upload failed:', e); }
+        }
+
         var formData = new FormData();
         formData.append('name', name);
         formData.append('category', category);
@@ -1429,8 +1511,8 @@ async function submitEdit(event) {
         formData.append('location', location);
         formData.append('description', desc);
         formData.append('sale_price', price);
-        if (editProdImageFile) formData.append('file', editProdImageFile);
-        if (editLocImageFile) formData.append('location_file', editLocImageFile);
+        if (imageUrl) formData.append('image_path', imageUrl);
+        if (locationImageUrl) formData.append('location_image_path', locationImageUrl);
 
         var res = await fetch('/api/staff/products/' + id + '/edit', {
             method: 'POST',
@@ -1445,7 +1527,9 @@ async function submitEdit(event) {
         showToast('✅ แก้ไขสินค้า "' + name + '" เรียบร้อย', 'success');
 
         editProdImageFile = null;
+        editProdImageBase64 = null;
         editLocImageFile = null;
+        editLocImageBase64 = null;
 
         if (currentView === 'stock') loadStockTable();
         else if (currentView === 'pos') {
