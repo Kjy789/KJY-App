@@ -1476,6 +1476,133 @@ body {
 .toast.error i { color: var(--red); }
 
 /* ============================================================
+   PIN INPUT
+   ============================================================ */
+.pin-input-wrap {
+    display: flex;
+    justify-content: center;
+    padding: 16px 0;
+}
+.pin-input {
+    width: 180px;
+    font-size: 36px;
+    font-weight: 800;
+    font-family: 'Inter', monospace;
+    text-align: center;
+    letter-spacing: 12px;
+    background: var(--bg);
+    border: 2px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 12px;
+    color: var(--text);
+    outline: none;
+    transition: var(--tr);
+}
+.pin-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
+
+/* ============================================================
+   AI SPEC BUTTON
+   ============================================================ */
+.desc-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+}
+.desc-row textarea { flex: 1; resize: vertical; min-height: 48px; }
+.btn-ai-spec {
+    padding: 9px 14px;
+    background: linear-gradient(135deg, #6366F1, #8B5CF6);
+    border: none;
+    border-radius: var(--radius-md);
+    color: white;
+    font-size: 14px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: var(--tr);
+    flex-shrink: 0;
+    margin-top: 0;
+}
+.btn-ai-spec:hover { filter: brightness(1.1); transform: translateY(-1px); }
+
+/* ============================================================
+   PRODUCT DETAIL MODAL
+   ============================================================ */
+.detail-hero {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+}
+.detail-img {
+    width: 140px;
+    height: 140px;
+    border-radius: var(--radius-2xl);
+    object-fit: cover;
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+    background: #F8FAFC;
+}
+.detail-info { flex: 1; }
+.detail-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.detail-tag {
+    padding: 3px 10px;
+    border-radius: var(--radius-full);
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--blue-light);
+    color: var(--blue);
+}
+
+.detail-spec {
+    background: #FEF3C7;
+    border: 1px solid #FDE68A;
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    font-size: 13px;
+    color: #92400E;
+    line-height: 1.6;
+}
+
+.detail-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+}
+.detail-stat {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 12px;
+    text-align: center;
+}
+.detail-stat small { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.detail-stat strong { display: block; margin-top: 4px; font-family: 'Inter', sans-serif; }
+
+.detail-desc { line-height: 1.6; }
+
+/* Low Stock Highlight */
+.stock-tag.low-warning { background: var(--red-light); color: #B91C1C; border-color: #FECACA; animation: pulse-warning 1.5s ease infinite; }
+@keyframes pulse-warning { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+/* Stock Warning Badge in Sidebar */
+.low-stock-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: var(--radius-full);
+    background: var(--red);
+    color: white;
+    font-size: 9px;
+    font-weight: 800;
+    font-family: 'Inter', sans-serif;
+    position: absolute;
+    top: 2px;
+    right: 2px;
+}
+
+/* ============================================================
    RESPONSIVE
    ============================================================ */
 @media (max-width: 768px) {

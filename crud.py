@@ -6,8 +6,68 @@ CRUD - ฟังก์ชันจัดการข้อมูลหลัก�
 
 from database import db_session, supabase_client, supabase_admin
 import logging
+from datetime import datetime
 
 logger = logging.getLogger("crud")
+
+
+# ============================================================
+# AUDIT LOG
+# ============================================================
+
+def add_audit_log(action_type: str, description: str, performed_by: str = "staff"):
+    """บันทึก Audit Log อัตโนมัติ"""
+    try:
+        with db_session() as conn:
+            conn.execute(
+                """INSERT INTO audit_log (action_type, description, performed_by, timestamp)
+                   VALUES (?, ?, ?, datetime('now', 'localtime'))""",
+                (action_type, description, performed_by)
+            )
+    except Exception as e:
+        logger.warning(f"Failed to write audit log: {e}")
+
+
+def get_audit_logs(limit: int = 100):
+    """ดึง Audit Log ล่าสุด"""
+    try:
+        with db_session() as conn:
+            rows = conn.execute(
+                "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to read audit logs: {e}")
+        return []
+
+
+# ============================================================
+# MULTI-KEYWORD SEARCH HELPER
+# ============================================================
+
+def build_multi_keyword_search(keyword: str, fields: list) -> tuple:
+    """
+    แยกคำค้นหาด้วย space และสร้าง WHERE clause สำหรับหลายฟิลด์
+    รองรับการค้นหาผสมภาษาไทย-อังกฤษ, บาร์โค้ด, SKU, ตำแหน่งชั้นวาง
+    """
+    if not keyword:
+        return "", []
+    
+    keywords = keyword.strip().split()
+    conditions = []
+    params = []
+    
+    for kw in keywords:
+        kw_cond = []
+        for field in fields:
+            kw_cond.append(f"{field} LIKE ?")
+            params.append(f"%{kw}%")
+        conditions.append("(" + " OR ".join(kw_cond) + ")")
+    
+    if conditions:
+        return " AND ".join(conditions), params
+    return "", []
 
 
 # ============================================================
@@ -18,22 +78,25 @@ def list_products_staff(keyword=None, location_code=None, category=None):
     """
     ดึงรายการสินค้าสำหรับ Staff
     *** กฎเหล็ก: ปิดกั้นการมองเห็น latest_cost / cost_price โดยเด็ดขาด ***
+    รองรับ Multi-Keyword Search
     """
     if supabase_client:
         try:
             query = supabase_client.from_("products").select(
-                "id, sku, name, category, sale_price, stock_qty, location_code, image_url, location_image_url, status, updated_at"
+                "id, sku, name, category, sale_price, stock_qty, location_code, location, min_stock, description, image_url, location_image_url, status, updated_at"
             ).eq("status", "active")
 
             if keyword:
-                query = query.ilike("name", f"%{keyword}%")
+                # Multi-keyword for Supabase - use OR for each keyword
+                kw_parts = keyword.strip().split()
+                for kw in kw_parts:
+                    query = query.or_(f"name.ilike.%{kw}%,sku.ilike.%{kw}%,location_code.ilike.%{kw}%,location.ilike.%{kw}%")
             if location_code:
                 query = query.eq("location_code", location_code)
             if category:
                 query = query.eq("category", category)
 
             res = query.order("name").execute()
-            # Map image_url to image_path for frontend compatibility
             products = []
             for item in res.data:
                 item["image_path"] = item.get("image_url")
@@ -44,15 +107,21 @@ def list_products_staff(keyword=None, location_code=None, category=None):
             logger.warning(f"Supabase query failed ({e}), falling back to local DB")
 
     query = """
-        SELECT id, sku, name, category, sale_price, stock_qty, location_code, 
+        SELECT id, sku, name, category, sale_price, stock_qty, location_code, location, min_stock, description,
                image_path, location_image_path, status, created_at, updated_at
         FROM products 
         WHERE status = 'active'
     """
     params = []
+    
     if keyword:
-        query += " AND (name LIKE ? OR sku LIKE ?)"
-        params.extend([f"%{keyword}%", f"%{keyword}%"])
+        kw_condition, kw_params = build_multi_keyword_search(
+            keyword, ["name", "sku", "location_code", "location", "category"]
+        )
+        if kw_condition:
+            query += f" AND {kw_condition}"
+            params.extend(kw_params)
+    
     if location_code:
         query += " AND location_code = ?"
         params.append(location_code)
@@ -71,7 +140,7 @@ def get_product_staff(product_id: int):
     if supabase_client:
         try:
             res = supabase_client.from_("products").select(
-                "id, sku, name, category, sale_price, stock_qty, location_code, image_url, location_image_url, status, updated_at"
+                "id, sku, name, category, sale_price, stock_qty, location_code, location, min_stock, description, image_url, location_image_url, status, updated_at"
             ).eq("id", product_id).execute()
             if res.data:
                 p = res.data[0]
@@ -83,7 +152,7 @@ def get_product_staff(product_id: int):
 
     with db_session() as conn:
         row = conn.execute(
-            """SELECT id, sku, name, category, sale_price, stock_qty, location_code, 
+            """SELECT id, sku, name, category, sale_price, stock_qty, location_code, location, min_stock, description,
                       image_path, location_image_path, status, created_at, updated_at 
                FROM products WHERE id = ?""", 
             (product_id,)
@@ -92,7 +161,8 @@ def get_product_staff(product_id: int):
 
 
 def add_product_staff(name, sale_price=0, category=None, sku=None,
-                      location_code=None, image_path=None, location_image_path=None, stock_qty=0):
+                      location_code=None, location="", description="",
+                      image_path=None, location_image_path=None, stock_qty=0, min_stock=5):
     """Staff เพิ่มสินค้าใหม่เข้าคลัง (สินค้ามีสถานะ active ทันที)"""
     if supabase_admin:
         try:
@@ -102,26 +172,31 @@ def add_product_staff(name, sale_price=0, category=None, sku=None,
                 "category": category or None,
                 "sku": sku or None,
                 "location_code": location_code or None,
+                "location": location or "",
+                "description": description or "",
                 "image_url": image_path,
                 "location_image_url": location_image_path,
                 "stock_qty": int(stock_qty or 0),
+                "min_stock": int(min_stock or 5),
                 "status": "active"
             }
             res = supabase_admin.from_("products").insert(payload).execute()
             if res.data:
-                return res.data[0]["id"]
+                pid = res.data[0]["id"]
+                add_audit_log("เพิ่มสินค้า", f"เพิ่มสินค้า '{name}' (SKU: {sku})", "staff")
+                return pid
         except Exception as e:
             logger.warning(f"Supabase product insert failed: {e}")
 
     with db_session() as conn:
         cur = conn.execute(
-            """INSERT INTO products (sku, name, category, sale_price, location_code, image_path, location_image_path, stock_qty, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
-            (sku, name, category, sale_price, location_code, image_path, location_image_path, stock_qty),
+            """INSERT INTO products (sku, name, category, sale_price, location_code, location, description, image_path, location_image_path, stock_qty, min_stock, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
+            (sku, name, category, sale_price, location_code, location, description, image_path, location_image_path, stock_qty, min_stock),
         )
         pid = cur.lastrowid
+        add_audit_log("เพิ่มสินค้า", f"เพิ่มสินค้า '{name}' (SKU: {sku})", "staff")
 
-        # Update or record location if location_image_path provided
         if location_code and location_image_path:
             conn.execute(
                 """INSERT INTO locations (code, image_path) VALUES (?, ?)
@@ -133,7 +208,7 @@ def add_product_staff(name, sale_price=0, category=None, sku=None,
 
 def update_product_staff(product_id: int, **fields):
     """Staff แก้ไขข้อมูลสินค้า (ไม่อนุญาตให้แก้ไขต้นทุน)"""
-    allowed_keys = {"name", "category", "sku", "sale_price", "stock_qty", "location_code", "image_path", "location_image_path"}
+    allowed_keys = {"name", "category", "sku", "sale_price", "stock_qty", "location_code", "location", "description", "min_stock", "image_path", "location_image_path"}
     filtered_fields = {k: v for k, v in fields.items() if k in allowed_keys and v is not None}
     if not filtered_fields:
         return
@@ -149,6 +224,7 @@ def update_product_staff(product_id: int, **fields):
                 else:
                     sp_payload[k] = v
             supabase_admin.from_("products").update(sp_payload).eq("id", product_id).execute()
+            add_audit_log("แก้ไขสินค้า", f"แก้ไขสินค้า id={product_id}: {', '.join(filtered_fields.keys())}", "staff")
             return
         except Exception as e:
             logger.warning(f"Supabase update failed: {e}")
@@ -159,6 +235,7 @@ def update_product_staff(product_id: int, **fields):
     values.append(product_id)
     with db_session() as conn:
         conn.execute(f"UPDATE products SET {set_clause} WHERE id = ?", values)
+        add_audit_log("แก้ไขสินค้า", f"แก้ไขสินค้า id={product_id}: {', '.join(filtered_fields.keys())}", "staff")
 
 
 def process_checkout(cart_items: list, payment_type: str = "cash", total_amount: float = 0.0):
@@ -176,6 +253,10 @@ def process_checkout(cart_items: list, payment_type: str = "cash", total_amount:
 
             if not pid or qty <= 0:
                 continue
+
+            # Get product name for audit log
+            p = conn.execute("SELECT name FROM products WHERE id = ?", (pid,)).fetchone()
+            pname = p["name"] if p else f"id={pid}"
 
             # Local SQLite update
             conn.execute(
@@ -197,6 +278,8 @@ def process_checkout(cart_items: list, payment_type: str = "cash", total_amount:
                 except Exception as e:
                     logger.warning(f"Supabase checkout stock update failed for id={pid}: {e}")
 
+            add_audit_log("ขายสินค้า", f"ขาย '{pname}' จำนวน {qty} ชิ้น (รวม {total_amount:.2f} บาท)", "staff")
+
     return {"status": "ok", "message": "บันทึกการขายและตัดสต็อกเรียบร้อยแล้ว"}
 
 
@@ -211,7 +294,9 @@ def list_products_owner(keyword=None, location_code=None, category=None):
         try:
             query = supabase_admin.from_("products").select("*").eq("status", "active")
             if keyword:
-                query = query.ilike("name", f"%{keyword}%")
+                kw_parts = keyword.strip().split()
+                for kw in kw_parts:
+                    query = query.or_(f"name.ilike.%{kw}%,sku.ilike.%{kw}%,location_code.ilike.%{kw}%,location.ilike.%{kw}%")
             if location_code:
                 query = query.eq("location_code", location_code)
             if category:
@@ -240,9 +325,15 @@ def list_products_owner(keyword=None, location_code=None, category=None):
 
     query = "SELECT * FROM products WHERE status = 'active'"
     params = []
+    
     if keyword:
-        query += " AND (name LIKE ? OR sku LIKE ?)"
-        params.extend([f"%{keyword}%", f"%{keyword}%"])
+        kw_condition, kw_params = build_multi_keyword_search(
+            keyword, ["name", "sku", "location_code", "location", "category"]
+        )
+        if kw_condition:
+            query += f" AND {kw_condition}"
+            params.extend(kw_params)
+    
     if location_code:
         query += " AND location_code = ?"
         params.append(location_code)
@@ -278,7 +369,7 @@ def get_owner_dashboard_stats():
     total_cost_value = sum(p["total_cost_val"] for p in products)
     total_sale_value = sum(p["total_sale_val"] for p in products)
     potential_profit = total_sale_value - total_cost_value
-    low_stock_count = sum(1 for p in products if p["stock_qty"] <= 5)
+    low_stock_count = sum(1 for p in products if p["stock_qty"] <= (p.get("min_stock") or 5))
 
     pending_list = list_pending_products()
 
@@ -332,7 +423,9 @@ def create_receipt(image_path, receipt_date=None, supplier_name=None,
                VALUES (?, ?, ?, ?, ?, ?)""",
             (receipt_date, supplier_name, receipt_no, image_path, ocr_raw_json, total_amount),
         )
-        return cur.lastrowid
+        rid = cur.lastrowid
+        add_audit_log("รับบิล", f"สร้างบิลสั่งซื้อ id={rid} จาก {supplier_name or 'ไม่ระบุ'}", "owner")
+        return rid
 
 
 def list_receipts():
@@ -394,6 +487,7 @@ def complete_product(product_id, sale_price, location_code, image_path=None, loc
                WHERE id = ?""",
             (sale_price, location_code, image_path, location_image_path, product_id),
         )
+        add_audit_log("เติมข้อมูลสินค้า", f"เติมข้อมูลสินค้า pending id={product_id}", "owner")
 
 
 def merge_pending_product(pending_id: int, active_id: int):
@@ -431,3 +525,4 @@ def merge_pending_product(pending_id: int, active_id: int):
             (active_id, pending_id),
         )
         conn.execute("DELETE FROM products WHERE id = ?", (pending_id,))
+        add_audit_log("ยุบรวมสินค้า", f"ยุบรวม pending id={pending_id} เข้า active id={active_id}", "owner")

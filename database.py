@@ -35,10 +35,13 @@ CREATE TABLE IF NOT EXISTS products (
     sku                 TEXT UNIQUE,
     name                TEXT NOT NULL,
     category            TEXT,
+    description         TEXT DEFAULT '',
     sale_price          REAL DEFAULT 0,
     latest_cost         REAL DEFAULT 0,
     stock_qty           INTEGER DEFAULT 0,
+    min_stock           INTEGER DEFAULT 5,
     location_code       TEXT,
+    location            TEXT DEFAULT '',
     image_path          TEXT,
     location_image_path TEXT,
     status              TEXT DEFAULT 'active',
@@ -89,6 +92,15 @@ CREATE TABLE IF NOT EXISTS locations (
     created_at      TEXT DEFAULT (datetime('now', 'localtime')),
     updated_at      TEXT DEFAULT (datetime('now', 'localtime'))
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp       TEXT DEFAULT (datetime('now', 'localtime')),
+    action_type     TEXT NOT NULL,
+    description     TEXT,
+    performed_by    TEXT DEFAULT 'staff',
+    created_at      TEXT DEFAULT (datetime('now', 'localtime'))
+);
 """
 
 
@@ -119,28 +131,34 @@ def init_db():
     with db_session() as conn:
         conn.executescript(SCHEMA)
 
-        # Migrate check: ensure location_image_path column exists
+        # Migrate check: ensure new columns exist
         cur = conn.execute("PRAGMA table_info(products);")
         columns = [row["name"] for row in cur.fetchall()]
         if "location_image_path" not in columns:
             conn.execute("ALTER TABLE products ADD COLUMN location_image_path TEXT;")
+        if "description" not in columns:
+            conn.execute("ALTER TABLE products ADD COLUMN description TEXT DEFAULT '';")
+        if "min_stock" not in columns:
+            conn.execute("ALTER TABLE products ADD COLUMN min_stock INTEGER DEFAULT 5;")
+        if "location" not in columns:
+            conn.execute("ALTER TABLE products ADD COLUMN location TEXT DEFAULT '';")
 
         # Seed initial mock products if database is empty
         count_res = conn.execute("SELECT COUNT(*) as cnt FROM products;").fetchone()
         if count_res and count_res["cnt"] == 0:
             mock_items = [
-                ("NUT-M10-01", "น็อตหกเหลี่ยม M10 x 25mm", "น็อต-สกรู", 15.0, 8.0, 121, "A-01-05", "https://images.unsplash.com/photo-1586864387967-d02ef85d93e8?w=500&auto=format&fit=crop&q=60"),
-                ("BELT-B52", "สายพานพัดลม Kubota B52", "สายพาน", 280.0, 180.0, 45, "B-02-12", "https://images.unsplash.com/photo-1581092160607-ee22621dd758?w=500&auto=format&fit=crop&q=60"),
-                ("FILT-OIL-K", "กรองน้ำมันเครื่อง Kubota L3608", "กรองอากาศ", 190.0, 120.0, 68, "C-01-02", "https://images.unsplash.com/photo-1486262715619-67b85e0b08d3?w=500&auto=format&fit=crop&q=60"),
-                ("OIL-4T-1L", "น้ำมันเครื่องเกรดพรีเมียม 4T 1L", "น้ำมัน", 160.0, 110.0, 80, "D-05-01", "https://images.unsplash.com/photo-1619642751034-765dfdf7c58e?w=500&auto=format&fit=crop&q=60"),
-                ("TIRE-600-14", "ยางรถไถ 6.00-14 6PR", "ยาง", 1850.0, 1400.0, 14, "E-01-01", "https://images.unsplash.com/photo-1578844251758-2f71da64c96f?w=500&auto=format&fit=crop&q=60"),
-                ("BLADE-K18", "ใบโรตารี่ ตราช้าง K18", "อะไหล่เกษตร", 220.0, 150.0, 90, "A-03-08", "https://images.unsplash.com/photo-1504917595217-d4dc5ebe6122?w=500&auto=format&fit=crop&q=60")
+                ("NUT-M10-01", "น็อตหกเหลี่ยม M10 x 25mm", "น็อต-สกรู", 15.0, 8.0, 121, "A-01-05", "https://images.unsplash.com/photo-1586864387967-d02ef85d93e8?w=500&auto=format&fit=crop&q=60", "ชั้นวาง A ตู้ 1", 5),
+                ("BELT-B52", "สายพานพัดลม Kubota B52", "สายพาน", 280.0, 180.0, 45, "B-02-12", "https://images.unsplash.com/photo-1581092160607-ee22621dd758?w=500&auto=format&fit=crop&q=60", "ชั้นวาง B ตู้ 2", 10),
+                ("FILT-OIL-K", "กรองน้ำมันเครื่อง Kubota L3608", "กรองอากาศ", 190.0, 120.0, 68, "C-01-02", "https://images.unsplash.com/photo-1486262715619-67b85e0b08d3?w=500&auto=format&fit=crop&q=60", "ชั้นวาง C ตู้ 1", 10),
+                ("OIL-4T-1L", "น้ำมันเครื่องเกรดพรีเมียม 4T 1L", "น้ำมัน", 160.0, 110.0, 80, "D-05-01", "https://images.unsplash.com/photo-1619642751034-765dfdf7c58e?w=500&auto=format&fit=crop&q=60", "ชั้นวาง D ตู้ 5", 20),
+                ("TIRE-600-14", "ยางรถไถ 6.00-14 6PR", "ยาง", 1850.0, 1400.0, 14, "E-01-01", "https://images.unsplash.com/photo-1578844251758-2f71da64c96f?w=500&auto=format&fit=crop&q=60", "ชั้นวาง E ตู้ 1", 5),
+                ("BLADE-K18", "ใบโรตารี่ ตราช้าง K18", "อะไหล่เกษตร", 220.0, 150.0, 90, "A-03-08", "https://images.unsplash.com/photo-1504917595217-d4dc5ebe6122?w=500&auto=format&fit=crop&q=60", "ชั้นวาง A ตู้ 3", 15)
             ]
-            for sku, name, cat, sale, cost, qty, loc, img in mock_items:
+            for sku, name, cat, sale, cost, qty, loc, img, location_text, min_stock in mock_items:
                 conn.execute(
-                    """INSERT INTO products (sku, name, category, sale_price, latest_cost, stock_qty, location_code, image_path, status)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
-                    (sku, name, cat, sale, cost, qty, loc, img)
+                    """INSERT INTO products (sku, name, category, sale_price, latest_cost, stock_qty, location_code, image_path, location, min_stock, status)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
+                    (sku, name, cat, sale, cost, qty, loc, img, location_text, min_stock)
                 )
 
 # Run DB init on module import

@@ -168,6 +168,12 @@
                 <div class="stat-card green"><div class="stat-icon"><i class="fa-solid fa-money-bill-trend-up"></i></div><div><small>กำไรคาดการณ์</small><h3 id="stat-profit">฿0</h3></div></div>
                 <div class="stat-card red"><div class="stat-icon"><i class="fa-solid fa-triangle-exclamation"></i></div><div><small>สต็อกต่ำ</small><h3 id="stat-low">0</h3></div></div>
             </div>
+
+            <!-- Audit Log Button -->
+            <div class="view-head" style="padding:8px 24px;border:none;background:transparent">
+                <button class="btn-outline" onclick="openAuditLog()" style="font-size:12px"><i class="fa-solid fa-clock-rotate-left"></i> ดู Audit Log (ต้องใส่ PIN)</button>
+            </div>
+
             <div class="table-card">
                 <div class="table-head"><h3>วิเคราะห์กำไรรายสินค้า</h3>
                     <div class="mini-search"><i class="fa-solid fa-magnifying-glass"></i><input type="text" id="owner-search" placeholder="ค้นหา..." oninput="debounceSearch('owner')"></div>
@@ -333,6 +339,112 @@
     <div class="modal small">
         <div class="modal-head"><h3><i class="fa-solid fa-barcode"></i> สแกนบาร์โค้ด</h3><button class="close" onclick="closeScanner()">&times;</button></div>
         <div class="modal-body"><div id="reader" class="reader"></div><p class="hint">จ่อกล้องที่บาร์โค้ดสินค้า</p></div>
+    </div>
+</div>
+
+<!-- PIN Modal (Boss Mode) -->
+<div class="modal-overlay hidden" id="modal-pin">
+    <div class="modal small">
+        <div class="modal-head"><h3><i class="fa-solid fa-lock"></i> ยืนยัน PIN</h3><button class="close" onclick="closeModal('modal-pin')">&times;</button></div>
+        <div class="modal-body">
+            <p style="font-size:13px;color:var(--text-secondary);margin-bottom:8px">กรุณาใส่ PIN 4 หลักเพื่อเข้าโหมด Owner/Boss</p>
+            <div class="pin-input-wrap">
+                <input type="password" id="pin-input" maxlength="4" class="pin-input" placeholder="****" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
+            </div>
+            <p id="pin-error" class="hidden" style="color:var(--red);font-size:12px;text-align:center">PIN ไม่ถูกต้อง กรุณาลองใหม่</p>
+        </div>
+        <div class="modal-foot" style="justify-content:center">
+            <button class="btn-outline" onclick="closeModal('modal-pin')">ยกเลิก</button>
+            <button class="btn-primary" id="pin-submit" onclick="verifyPin()"><i class="fa-solid fa-check"></i> ยืนยัน</button>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Product Modal -->
+<div class="modal-overlay hidden" id="modal-edit">
+    <div class="modal large">
+        <div class="modal-head"><h3><i class="fa-solid fa-pen-to-square"></i> แก้ไขสินค้า <span id="edit-title" style="font-size:13px;color:var(--text-muted)"></span></h3><button class="close" onclick="closeModal('modal-edit')">&times;</button></div>
+        <div class="modal-body">
+            <div class="photo-grid">
+                <div class="photo-zone" onclick="document.getElementById('fi-edit-prod').click()">
+                    <div id="ph-edit-prod" class="ph"><i class="fa-solid fa-camera"></i><p>รูปสินค้า</p><small>แตะเปลี่ยน</small></div>
+                    <img id="img-edit-prod" class="ph-img" alt="">
+                    <input type="file" id="fi-edit-prod" accept="image/*" capture="environment" class="hidden" onchange="onEditProdImg(event)">
+                </div>
+                <div class="photo-zone" onclick="document.getElementById('fi-edit-loc').click()">
+                    <div id="ph-edit-loc" class="ph"><i class="fa-solid fa-location-dot"></i><p>รูปตำแหน่ง</p><small>แตะเปลี่ยน</small></div>
+                    <img id="img-edit-loc" class="ph-img" alt="">
+                    <input type="file" id="fi-edit-loc" accept="image/*" capture="environment" class="hidden" onchange="onEditLocImg(event)">
+                </div>
+            </div>
+            <form id="form-edit" onsubmit="submitEdit(event)" class="add-form">
+                <input type="hidden" id="e-id">
+                <div class="form-group"><label>ชื่อสินค้า <b class="req">*</b></label><input id="e-name" required placeholder="ชื่อสินค้า" class="input"></div>
+                <div class="row-2">
+                    <div class="form-group"><label>หมวดหมู่</label><input id="e-cat" placeholder="น็อต-สกรู" class="input" list="cat-list"></div>
+                    <div class="form-group"><label>SKU / บาร์โค้ด</label><div class="input-scan"><input id="e-sku" placeholder="NUT-M10" class="input"><button type="button" class="scan-sm" onclick="openScanner('sku')"><i class="fa-solid fa-barcode"></i></button></div></div>
+                </div>
+                <div class="row-3">
+                    <div class="form-group"><label>สต็อก</label><input id="e-qty" type="number" min="0" value="0" class="input"></div>
+                    <div class="form-group"><label>สต็อกขั้นต่ำ</label><input id="e-min" type="number" min="0" value="5" class="input"></div>
+                    <div class="form-group"><label>ราคาขาย ฿</label><input id="e-price" type="number" step="0.01" min="0" placeholder="0" class="input"></div>
+                </div>
+                <div class="row-2">
+                    <div class="form-group"><label>รหัสตำแหน่ง</label><input id="e-loc" placeholder="A-01-05" class="input"></div>
+                    <div class="form-group"><label>ตำแหน่งจัดเก็บ (ข้อความ)</label><input id="e-location" placeholder="วางใกล้กับ... ชั้น..." class="input"></div>
+                </div>
+                <div class="form-group"><label>รายละเอียด / สเปก</label>
+                    <div class="desc-row"><textarea id="e-desc" class="input" rows="2" placeholder="สเปกสินค้า..."></textarea><button type="button" class="btn-ai-spec" onclick="generateSpec('edit')" title="AI สรุปสเปก">✨ AI</button></div>
+                </div>
+            </form>
+        </div>
+        <div class="modal-foot">
+            <button class="btn-outline" onclick="closeModal('modal-edit')">ยกเลิก</button>
+            <button class="btn-primary" id="btn-edit-submit" onclick="document.getElementById('form-edit').requestSubmit()"><i class="fa-solid fa-floppy-disk"></i> บันทึกการแก้ไข</button>
+        </div>
+    </div>
+</div>
+
+<!-- Product Detail Modal -->
+<div class="modal-overlay hidden" id="modal-detail">
+    <div class="modal medium">
+        <div class="modal-head"><h3 id="detail-title"><i class="fa-solid fa-box"></i> รายละเอียดสินค้า</h3><button class="close" onclick="closeModal('modal-detail')">&times;</button></div>
+        <div class="modal-body">
+            <div class="detail-hero">
+                <img id="detail-img" src="" class="detail-img" alt="" onerror="this.src='/static/images/placeholder.svg'">
+                <div class="detail-info">
+                    <h2 id="detail-name" style="font-size:20px;font-weight:700;margin-bottom:4px"></h2>
+                    <p id="detail-sku" style="font-size:12px;color:var(--text-muted);margin-bottom:8px"></p>
+                    <div class="detail-tags" id="detail-tags"></div>
+                </div>
+            </div>
+            <div class="detail-spec" id="detail-spec"></div>
+            <div class="detail-stats">
+                <div class="detail-stat"><small>ราคาขาย</small><strong id="detail-price" style="color:var(--blue);font-size:22px">฿0</strong></div>
+                <div class="detail-stat"><small>สต็อกคงเหลือ</small><strong id="detail-stock" style="font-size:22px">0</strong></div>
+                <div class="detail-stat"><small>ตำแหน่ง</small><strong id="detail-location" style="font-size:14px;color:var(--text-secondary)">-</strong></div>
+            </div>
+            <div class="detail-desc" id="detail-desc" style="font-size:13px;color:var(--text-secondary);padding:12px;background:var(--bg);border-radius:var(--radius-md)"></div>
+            <button class="btn-primary" id="detail-add-btn" onclick="addToCartFromDetail()" style="width:100%;justify-content:center;padding:12px">
+                <i class="fa-solid fa-cart-plus"></i> เพิ่มลงตะกร้า
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Audit Log Modal -->
+<div class="modal-overlay hidden" id="modal-audit">
+    <div class="modal large">
+        <div class="modal-head"><h3><i class="fa-solid fa-clock-rotate-left"></i> Audit Log</h3><button class="close" onclick="closeModal('modal-audit')">&times;</button></div>
+        <div class="modal-body" style="padding:12px">
+            <div class="table-scroll" style="max-height:400px">
+                <table class="data-table"><thead><tr><th>เวลา</th><th>การกระทำ</th><th>รายละเอียด</th><th>ผู้ทำ</th></tr></thead><tbody id="audit-body"><tr><td colspan="4" class="empty">กำลังโหลด...</td></tr></tbody></table>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn-outline" onclick="closeModal('modal-audit')">ปิด</button>
+            <button class="btn-primary" onclick="loadAuditLogs()"><i class="fa-solid fa-rotate"></i> รีเฟรช</button>
+        </div>
     </div>
 </div>
 

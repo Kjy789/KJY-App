@@ -1166,3 +1166,604 @@ function escHtml(str) {
         .replace(/"/g, '\x26quot;')
         .replace(/'/g, '\x26#039;');
 }
+
+// ==========================================================================
+// AUTO-SAVE CART TO LOCALSTORAGE
+// ==========================================================================
+
+function saveCartToStorage() {
+    try {
+        var data = { cart: cart, cartProductMap: cartProductMap };
+        localStorage.setItem('kjy_cart', JSON.stringify(data));
+    } catch (e) {}
+}
+
+function loadCartFromStorage() {
+    try {
+        var saved = localStorage.getItem('kjy_cart');
+        if (saved) {
+            var data = JSON.parse(saved);
+            if (data.cart && data.cart.length > 0) {
+                cart = data.cart;
+                cartProductMap = data.cartProductMap || {};
+                return true;
+            }
+        }
+    } catch (e) {}
+    return false;
+}
+
+// Override cart functions to auto-save
+var _origAddToCart = addToCart;
+addToCart = function(id, name, price, maxStock, imgSrc) {
+    _origAddToCart(id, name, price, maxStock, imgSrc);
+    saveCartToStorage();
+};
+
+var _origRemoveFromCart = removeFromCart;
+removeFromCart = function(id) {
+    _origRemoveFromCart(id);
+    saveCartToStorage();
+};
+
+var _origChangeQty = changeQty;
+changeQty = function(id, delta) {
+    _origChangeQty(id, delta);
+    saveCartToStorage();
+};
+
+var _origClearCart = clearCart;
+clearCart = function() {
+    _origClearCart();
+    try { localStorage.removeItem('kjy_cart'); } catch(e) {}
+};
+
+// Load cart from storage on init
+document.addEventListener('DOMContentLoaded', function() {
+    // Original init
+    var origDomReady = function() {
+        updateCartDateDisplay();
+        loadPOSProducts();
+        setInterval(updateCartDateDisplay, 60000);
+        applyRole(currentRole);
+    };
+    
+    // Override: load cart from storage first
+    var loaded = loadCartFromStorage();
+    updateCartDateDisplay();
+    if (loaded) {
+        renderCart();
+    }
+    loadPOSProducts();
+    setInterval(updateCartDateDisplay, 60000);
+    applyRole(currentRole);
+});
+
+// ==========================================================================
+// PIN VERIFICATION (Boss Mode)
+// ==========================================================================
+
+function openPinModal(callback) {
+    window._pinCallback = callback;
+    document.getElementById('pin-input').value = '';
+    document.getElementById('pin-error').classList.add('hidden');
+    openModal('modal-pin');
+    setTimeout(function() {
+        var inp = document.getElementById('pin-input');
+        if (inp) inp.focus();
+    }, 300);
+}
+
+async function verifyPin() {
+    var pin = document.getElementById('pin-input').value.trim();
+    if (!pin || pin.length < 4) {
+        document.getElementById('pin-error').classList.remove('hidden');
+        return;
+    }
+
+    var btn = document.getElementById('pin-submit');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-sm"></span> ตรวจสอบ...';
+
+    try {
+        var res = await fetch('/api/auth/verify-pin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pin: pin })
+        });
+        var data = await res.json();
+
+        if (data.verified) {
+            closeModal('modal-pin');
+            if (window._pinCallback) {
+                window._pinCallback();
+                window._pinCallback = null;
+            }
+            showToast('✅ PIN ถูกต้อง! เข้าสู่โหมด Owner', 'success');
+        } else {
+            document.getElementById('pin-error').classList.remove('hidden');
+            document.getElementById('pin-input').value = '';
+            document.getElementById('pin-input').focus();
+        }
+    } catch (err) {
+        showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-check"></i> ยืนยัน';
+    }
+}
+
+// Override toggleRole to require PIN for owner mode
+var _origToggleRole = toggleRole;
+toggleRole = function() {
+    if (currentRole === 'staff') {
+        openPinModal(function() {
+            currentRole = 'owner';
+            applyRole('owner');
+            showToast('เข้าสู่โหมด Owner 🔑', 'success');
+        });
+    } else {
+        currentRole = 'staff';
+        if (['receive', 'reports'].indexOf(currentView) !== -1) {
+            switchView('pos');
+        }
+        applyRole('staff');
+        showToast('เข้าสู่โหมด Staff 👷', 'success');
+    }
+};
+
+// ==========================================================================
+// EDIT PRODUCT
+// ==========================================================================
+
+function openEditProduct(productId) {
+    openModal('modal-edit');
+
+    // Fetch product data
+    fetch('/api/staff/products/' + productId)
+        .then(function(res) { return res.json(); })
+        .then(function(p) {
+            document.getElementById('e-id').value = p.id || '';
+            document.getElementById('e-name').value = p.name || '';
+            document.getElementById('e-cat').value = p.category || '';
+            document.getElementById('e-sku').value = p.sku || '';
+            document.getElementById('e-qty').value = p.stock_qty || 0;
+            document.getElementById('e-min').value = p.min_stock || 5;
+            document.getElementById('e-price').value = p.sale_price || 0;
+            document.getElementById('e-loc').value = p.location_code || '';
+            document.getElementById('e-location').value = p.location || '';
+            document.getElementById('e-desc').value = p.description || '';
+            document.getElementById('edit-title').textContent = '- ' + (p.name || '');
+
+            // Set image previews
+            var imgProd = document.getElementById('img-edit-prod');
+            var imgLoc = document.getElementById('img-edit-loc');
+            var phProd = document.getElementById('ph-edit-prod');
+            var phLoc = document.getElementById('ph-edit-loc');
+
+            if (p.image_path || p.image_url) {
+                imgProd.src = p.image_path || p.image_url || '';
+                imgProd.classList.remove('hidden');
+                if (phProd) phProd.classList.add('hidden');
+            }
+            if (p.location_image_path || p.location_image_url) {
+                imgLoc.src = p.location_image_path || p.location_image_url || '';
+                imgLoc.classList.remove('hidden');
+                if (phLoc) phLoc.classList.add('hidden');
+            }
+        })
+        .catch(function(err) {
+            showToast('ไม่สามารถโหลดข้อมูลสินค้า: ' + err.message, 'error');
+            closeModal('modal-edit');
+        });
+}
+
+var editProdImageFile = null;
+var editLocImageFile = null;
+
+function onEditProdImg(event) {
+    var file = event.target.files[0];
+    if (!file) return;
+    editProdImageFile = file;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        var preview = document.getElementById('img-edit-prod');
+        if (preview) {
+            preview.src = e.target.result;
+            preview.classList.remove('hidden');
+        }
+        var ph = document.getElementById('ph-edit-prod');
+        if (ph) ph.classList.add('hidden');
+    };
+    reader.readAsDataURL(file);
+}
+
+function onEditLocImg(event) {
+    var file = event.target.files[0];
+    if (!file) return;
+    editLocImageFile = file;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        var preview = document.getElementById('img-edit-loc');
+        if (preview) {
+            preview.src = e.target.result;
+            preview.classList.remove('hidden');
+        }
+        var ph = document.getElementById('ph-edit-loc');
+        if (ph) ph.classList.add('hidden');
+    };
+    reader.readAsDataURL(file);
+}
+
+async function submitEdit(event) {
+    event.preventDefault();
+
+    var id = document.getElementById('e-id').value;
+    var name = document.getElementById('e-name').value.trim();
+    var category = document.getElementById('e-cat').value.trim();
+    var sku = document.getElementById('e-sku').value.trim();
+    var stock = document.getElementById('e-qty').value;
+    var minStock = document.getElementById('e-min').value;
+    var price = document.getElementById('e-price').value;
+    var loc = document.getElementById('e-loc').value.trim();
+    var location = document.getElementById('e-location').value.trim();
+    var desc = document.getElementById('e-desc').value.trim();
+
+    if (!name || !id) {
+        showToast('กรุณากรอกชื่อสินค้า', 'error');
+        return;
+    }
+
+    var submitBtn = document.getElementById('btn-edit-submit');
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="spinner-sm"></span> กำลังบันทึก...';
+
+    try {
+        var formData = new FormData();
+        formData.append('name', name);
+        formData.append('category', category);
+        formData.append('sku', sku);
+        formData.append('stock_qty', stock);
+        formData.append('min_stock', minStock);
+        formData.append('location_code', loc);
+        formData.append('location', location);
+        formData.append('description', desc);
+        formData.append('sale_price', price);
+        if (editProdImageFile) formData.append('file', editProdImageFile);
+        if (editLocImageFile) formData.append('location_file', editLocImageFile);
+
+        var res = await fetch('/api/staff/products/' + id + '/edit', {
+            method: 'POST',
+            body: formData
+        });
+        if (!res.ok) {
+            var errData = await res.json().catch(function() { return {}; });
+            throw new Error(errData.detail || 'บันทึกไม่สำเร็จ');
+        }
+
+        closeModal('modal-edit');
+        showToast('✅ แก้ไขสินค้า "' + name + '" เรียบร้อย', 'success');
+
+        editProdImageFile = null;
+        editLocImageFile = null;
+
+        if (currentView === 'stock') loadStockTable();
+        else if (currentView === 'pos') {
+            var kw = document.getElementById('pos-search') ? document.getElementById('pos-search').value.trim() : '';
+            loadPOSProducts(kw, currentCategory);
+        }
+
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> บันทึกการแก้ไข';
+    }
+}
+
+// ==========================================================================
+// PRODUCT DETAIL MODAL
+// ==========================================================================
+
+var detailProduct = null;
+
+function openProductDetail(productId) {
+    fetch('/api/staff/products/' + productId)
+        .then(function(res) { return res.json(); })
+        .then(function(p) {
+            detailProduct = p;
+            document.getElementById('detail-name').textContent = p.name || '-';
+            document.getElementById('detail-sku').textContent = 'SKU: ' + (p.sku || '-');
+            document.getElementById('detail-img').src = p.image_path || p.image_url || '/static/images/placeholder.svg';
+            document.getElementById('detail-price').textContent = '฿' + fmtMoney(p.sale_price || 0);
+            document.getElementById('detail-stock').textContent = (p.stock_qty || 0) + ' ชิ้น';
+            document.getElementById('detail-location').textContent = p.location_code || '-';
+
+            // Tags
+            var tagsHtml = '';
+            if (p.category) tagsHtml += '<span class="detail-tag">' + escHtml(p.category) + '</span>';
+            if (p.location_code) tagsHtml += '<span class="detail-tag">📍 ' + escHtml(p.location_code) + '</span>';
+            if (p.location) tagsHtml += '<span class="detail-tag">🏪 ' + escHtml(p.location) + '</span>';
+            document.getElementById('detail-tags').innerHTML = tagsHtml;
+
+            // Spec
+            var specEl = document.getElementById('detail-spec');
+            if (p.description) {
+                specEl.innerHTML = '<strong>📋 สเปกสินค้า:</strong><br>' + escHtml(p.description);
+                specEl.classList.remove('hidden');
+            } else {
+                specEl.classList.add('hidden');
+            }
+
+            // Description
+            var descEl = document.getElementById('detail-desc');
+            var descText = '';
+            if (p.min_stock) descText += 'สต็อกขั้นต่ำ: ' + p.min_stock + ' ชิ้น. ';
+            if (p.stock_qty <= (p.min_stock || 5)) descText += '⚠️ สินค้าใกล้หมดสต็อก!';
+            descEl.textContent = descText || 'ไม่มีข้อมูลเพิ่มเติม';
+
+            document.getElementById('detail-add-btn').onclick = function() {
+                addToCart(p.id, p.name, p.sale_price || 0, p.stock_qty || 0, p.image_path || p.image_url || '');
+                closeModal('modal-detail');
+            };
+
+            openModal('modal-detail');
+        })
+        .catch(function(err) {
+            showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
+        });
+}
+
+function addToCartFromDetail() {
+    if (detailProduct) {
+        addToCart(detailProduct.id, detailProduct.name, detailProduct.sale_price || 0, detailProduct.stock_qty || 0, detailProduct.image_path || detailProduct.image_url || '');
+        closeModal('modal-detail');
+    }
+}
+
+// ==========================================================================
+// AUDIT LOG
+// ==========================================================================
+
+function openAuditLog() {
+    openPinModal(function() {
+        loadAuditLogs();
+        openModal('modal-audit');
+    });
+}
+
+async function loadAuditLogs() {
+    var tbody = document.getElementById('audit-body');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="4" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลด...</td></tr>';
+
+    try {
+        var res = await fetch('/api/owner/audit-logs?limit=100');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var logs = await res.json();
+
+        if (!logs || logs.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="empty">ไม่มีรายการ Audit Log</td></tr>';
+            return;
+        }
+
+        var html = '';
+        for (var i = 0; i < logs.length; i++) {
+            var log = logs[i];
+            html += '<tr>' +
+                '<td style="font-size:11px;color:var(--text-muted);white-space:nowrap">' + escHtml(log.timestamp || log.created_at || '-') + '</td>' +
+                '<td><span class="stock-tag" style="background:var(--blue-light);color:var(--blue)">' + escHtml(log.action_type) + '</span></td>' +
+                '<td>' + escHtml(log.description || '-') + '</td>' +
+                '<td>' + escHtml(log.performed_by || '-') + '</td></tr>';
+        }
+        tbody.innerHTML = html;
+
+    } catch (err) {
+        console.error('Audit log error:', err);
+        tbody.innerHTML = '<tr><td colspan="4" class="empty" style="color:var(--red)">เกิดข้อผิดพลาด: ' + err.message + '</td></tr>';
+    }
+}
+
+// ==========================================================================
+// AI SPEC GENERATION
+// ==========================================================================
+
+async function generateSpec(mode) {
+    var nameField = mode === 'add' ? document.getElementById('a-name') : document.getElementById('e-name');
+    var catField = mode === 'add' ? document.getElementById('a-cat') : document.getElementById('e-cat');
+    var descField = mode === 'add' ? null : document.getElementById('e-desc');
+
+    if (!nameField || !nameField.value.trim()) {
+        showToast('กรุณากรอกชื่อสินค้าก่อน', 'error');
+        return;
+    }
+
+    var btn = event ? event.target : null;
+    if (btn) { btn.disabled = true; btn.textContent = '...'; }
+
+    try {
+        var res = await fetch('/api/ai/generate-spec', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: nameField.value.trim(), category: catField ? catField.value.trim() : '' })
+        });
+        var data = await res.json();
+
+        if (descField && data.spec) {
+            descField.value = data.spec;
+            showToast('✨ AI สรุปสเปกสินค้าเรียบร้อย', 'success');
+        } else if (data.spec) {
+            showToast('✨ AI: ' + data.spec.substring(0, 50) + '...', 'success');
+        }
+    } catch (err) {
+        showToast('AI สรุปสเปกไม่สำเร็จ', 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '✨ AI'; }
+    }
+}
+
+// ==========================================================================
+// ENHANCED PRODUCT CARD - Add click to open detail + edit button in stock
+// ==========================================================================
+
+// Override renderProductCard to add click handler for image
+var _origRenderProductCard = renderProductCard;
+renderProductCard = function(p) {
+    var html = _origRenderProductCard(p);
+    // Add click handler on image to open detail
+    var id = p.id;
+    html = html.replace('<div class="product-card" data-id="' + id + '">',
+        '<div class="product-card" data-id="' + id + '" onclick="openProductDetail(' + id + ')">');
+    return html;
+};
+
+// Override loadStockTable to add edit button
+var _origLoadStockTable = loadStockTable;
+loadStockTable = function(keyword) {
+    if (keyword === undefined) keyword = '';
+    var tbody = document.getElementById('stock-body');
+    if (!tbody) return;
+
+    tbody.innerHTML = '<tr><td colspan="8" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลด...</td></tr>';
+
+    try {
+        var url = '/api/staff/products?';
+        if (keyword) url += 'keyword=' + encodeURIComponent(keyword) + '&';
+
+        fetch(url)
+            .then(function(res) {
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return res.json();
+            })
+            .then(function(products) {
+                if (!products || products.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="8" class="empty">ไม่พบรายการสินค้า</td></tr>';
+                    return;
+                }
+
+                var html = '';
+                for (var i = 0; i < products.length; i++) {
+                    var p = products[i];
+                    var stock = parseInt(p.stock_qty) || 0;
+                    var minStock = parseInt(p.min_stock) || 5;
+                    var price = parseFloat(p.sale_price) || 0;
+                    var rawName = p.name || '-';
+                    var name = escHtml(rawName);
+                    var sku = escHtml(p.sku || '-');
+                    var cat = escHtml(p.category || '-');
+                    var loc = escHtml(p.location_code || '-');
+                    var imgSrc = p.image_path || p.image_url || '';
+                    var locImgSrc = p.location_image_path || p.location_image_url || '';
+
+                    var stockTagClass = 'ok';
+                    if (stock === 0) stockTagClass = 'out';
+                    else if (stock <= minStock) stockTagClass = 'low-warning';
+                    else if (stock <= 5) stockTagClass = 'low';
+
+                    var stockTag = '<span class="stock-tag ' + stockTagClass + '">' + (stock === 0 ? 'หมด' : stock + ' ชิ้น') + '</span>';
+
+                    var thumbHtml = '';
+                    if (imgSrc) {
+                        thumbHtml = '<img src="' + escHtml(imgSrc) + '" class="product-thumb" alt="' + name + '" onerror="this.src=\'/static/images/placeholder.svg\'">';
+                    } else {
+                        thumbHtml = '<div class="product-thumb-icon"><i class="fa-solid fa-image"></i></div>';
+                    }
+
+                    var locPhotoBtn = '';
+                    if (locImgSrc) {
+                        locPhotoBtn = '<button class="btn-icon" onclick="openLocationModal(\'' + escHtml(locImgSrc) + '\',\'' + name + '\',\'' + loc + '\')" title="ดูรูปตำแหน่ง"><i class="fa-solid fa-image"></i></button>';
+                    } else {
+                        locPhotoBtn = '<span style="color:var(--text-muted);font-size:11px">-</span>';
+                    }
+
+                    html += '<tr><td><div class="product-cell">' + thumbHtml +
+                        '<div><div class="product-name-cell">' + name + '</div><div class="product-sku-cell">' + sku + '</div></div></div></td>' +
+                        '<td>' + cat + '</td>' +
+                        '<td><code style="font-size:11px;color:var(--blue)">' + loc + '</code></td>' +
+                        '<td class="c">' + stockTag + '</td>' +
+                        '<td class="r" style="font-family:\'Inter\',sans-serif;font-weight:700;color:var(--blue)">฿' + fmtMoney(price) + '</td>' +
+                        '<td class="c">' + locPhotoBtn + '</td>' +
+                        '<td><div class="action-btns">' +
+                        '<button class="btn-icon" onclick="openEditProduct(' + p.id + ')" title="แก้ไข"><i class="fa-solid fa-pen"></i></button>' +
+                        '<button class="btn-icon" onclick="addToCart(' + p.id + ',\'' + escHtml(rawName) + '\',' + price + ',' + stock + ',\'' + escHtml(imgSrc) + '\')" title="เพิ่มลงตะกร้า"' + (stock === 0 ? ' disabled' : '') + '>' +
+                        '<i class="fa-solid fa-cart-plus"></i></button></div></td></tr>';
+                }
+                tbody.innerHTML = html;
+            })
+            .catch(function(err) {
+                console.error('Stock load error:', err);
+                tbody.innerHTML = '<tr><td colspan="8" class="empty" style="color:var(--red)">เกิดข้อผิดพลาด: ' + err.message + '</td></tr>';
+            });
+    } catch (err) {
+        console.error('Stock load error:', err);
+        tbody.innerHTML = '<tr><td colspan="8" class="empty" style="color:var(--red)">เกิดข้อผิดพลาด: ' + err.message + '</td></tr>';
+    }
+};
+
+// Update stock table header to include edit column
+document.addEventListener('DOMContentLoaded', function() {
+    var stockTable = document.querySelector('#view-stock .data-table thead tr');
+    if (stockTable) {
+        stockTable.innerHTML = '<th>สินค้า</th><th>หมวดหมู่</th><th>ตำแหน่ง</th><th class="c">สต็อก</th><th class="r">ราคาขาย</th><th class="c">รูป</th><th class="c">จัดการ</th>';
+    }
+    var stockBody = document.getElementById('stock-body');
+    if (stockBody) {
+        stockBody.innerHTML = '<tr><td colspan="7" class="empty">กำลังโหลด...</td></tr>';
+    }
+});
+
+// ==========================================================================
+// UPDATE ONERROR HANDLERS FOR ALL IMAGES
+// ==========================================================================
+
+// This handles the onerror fallback for all dynamically created images
+// The static HTML already has onerror on relevant img tags
+// For dynamic content, the render functions already have onerror handlers
+
+// ==========================================================================
+// ENHANCED LOW STOCK ALERT ON DASHBOARD
+// ==========================================================================
+
+// Override loadOwnerReports to show low stock alerts
+var _origLoadOwnerReports = loadOwnerReports;
+loadOwnerReports = function(keyword) {
+    if (keyword === undefined) keyword = '';
+    _origLoadOwnerReports(keyword);
+
+    // Also check for low stock products
+    fetch('/api/owner/products')
+        .then(function(res) { return res.json(); })
+        .then(function(products) {
+            var lowStockCount = 0;
+            for (var i = 0; i < products.length; i++) {
+                if (products[i].stock_qty <= (products[i].min_stock || 5)) {
+                    lowStockCount++;
+                }
+            }
+            var lowEl = document.getElementById('stat-low');
+            if (lowEl) {
+                lowEl.textContent = lowStockCount;
+                if (lowStockCount > 0) {
+                    lowEl.style.color = 'var(--red)';
+                }
+            }
+            // Update sidebar badge
+            var badge = document.getElementById('low-stock-badge');
+            if (!badge) {
+                var navStock = document.getElementById('nav-stock');
+                if (navStock && lowStockCount > 0) {
+                    badge = document.createElement('span');
+                    badge.id = 'low-stock-badge';
+                    badge.className = 'low-stock-badge';
+                    badge.textContent = lowStockCount;
+                    navStock.style.position = 'relative';
+                    navStock.appendChild(badge);
+                }
+            } else {
+                badge.textContent = lowStockCount;
+                if (lowStockCount === 0) badge.classList.add('hidden');
+                else badge.classList.remove('hidden');
+            }
+        })
+        .catch(function() {});
+};

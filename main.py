@@ -17,7 +17,10 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 from database import init_db, supabase_admin
 import crud
-from config import RECEIPT_IMAGES_DIR, PRODUCT_IMAGES_DIR, LOCATION_IMAGES_DIR, GEMINI_API_KEY
+from config import RECEIPT_IMAGES_DIR, PRODUCT_IMAGES_DIR, LOCATION_IMAGES_DIR, GEMINI_API_KEY, BASE_DIR
+
+# PIN Code for Boss Mode (default: 1234)
+BOSS_PIN = "1234"
 
 
 @asynccontextmanager
@@ -533,6 +536,151 @@ def root():
     if os.path.exists(static_index):
         return FileResponse(static_index)
     return {"message": "KJY Inventory Cloud API Running — Go to /docs"}
+
+
+# ============================================================
+# PIN VERIFICATION (Boss Mode)
+# ============================================================
+
+@app.post("/api/auth/verify-pin")
+def verify_boss_pin(payload: dict):
+    """ตรวจสอบ PIN Code สำหรับเข้าโหมด Boss/Owner"""
+    pin = payload.get("pin", "")
+    if pin == BOSS_PIN:
+        crud.add_audit_log("เข้าโหมด Boss", "เข้าสู่โหมด Owner/Boss สำเร็จ", "staff")
+        return {"status": "ok", "verified": True}
+    return {"status": "error", "verified": False, "message": "PIN ไม่ถูกต้อง"}
+
+
+# ============================================================
+# AUDIT LOG API
+# ============================================================
+
+@app.get("/api/owner/audit-logs")
+def get_audit_logs(limit: int = Query(100)):
+    """ดึง Audit Log (ต้องยืนยัน PIN ก่อน)"""
+    try:
+        logs = crud.get_audit_logs(limit=limit)
+        return logs
+    except Exception as e:
+        print(f"Audit log error: {e}")
+        return []
+
+
+# ============================================================
+# AI PRODUCT SPEC GENERATION
+# ============================================================
+
+@app.post("/api/ai/generate-spec")
+async def generate_product_spec(payload: dict):
+    """ใช้ Gemini AI สรุปสเปก/จุดเด่นสินค้าสั้นๆ"""
+    product_name = payload.get("name", "")
+    category = payload.get("category", "")
+
+    if not product_name:
+        return {"spec": ""}
+
+    api_key = GEMINI_API_KEY
+    if not api_key:
+        api_txt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api.txt")
+        if os.path.exists(api_txt_path):
+            with open(api_txt_path, "r", encoding="utf-8") as f:
+                api_key = f.read().strip()
+
+    if not api_key:
+        return {"spec": f"สินค้า: {product_name} | หมวดหมู่: {category}"}
+
+    try:
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=api_key)
+        prompt = f"""เขียนสเปก/จุดเด่นของสินค้าชื่อ '{product_name}' หมวดหมู่ '{category}' 
+ให้สั้นๆ 3-4 บรรทัด เป็นภาษาไทย เน้นการใช้งานจริง ตอบกลับเป็น JSON:
+{{"spec": "ข้อความสเปก..."}}"""
+        response = client.models.generate_content(
+            model="gemini-flash-latest",
+            contents=[prompt],
+        )
+        text = response.text.strip()
+        start = text.find('{')
+        end = text.rfind('}')
+        if start != -1 and end != -1:
+            data = json.loads(text[start:end+1])
+            return {"spec": data.get("spec", "")}
+    except Exception as e:
+        print(f"AI spec generation failed: {e}")
+
+    return {"spec": f"สินค้า: {product_name} | หมวดหมู่: {category}"}
+
+
+# ============================================================
+# IMAGE UPLOAD AS BASE64 DATA URL
+# ============================================================
+
+@app.post("/api/upload/image-base64")
+async def upload_image_base64(payload: dict):
+    """
+    รับรูปภาพเป็น Base64 Data URL และบันทึก
+    ใช้สำหรับกรณีที่ต้องการให้รูปอยู่รอดแม้ Render ลบไฟล์
+    """
+    data_url = payload.get("data_url", "")
+    prefix = payload.get("prefix", "img")
+    folder = payload.get("folder", "products")
+
+    if not data_url or "," not in data_url:
+        raise HTTPException(status_code=400, detail="Invalid data URL")
+
+    try:
+        # Extract the base64 data
+        header, encoded = data_url.split(",", 1)
+        file_bytes = base64.b64decode(encoded)
+
+        # Determine extension
+        ext = "jpg"
+        if "png" in header:
+            ext = "png"
+        elif "gif" in header:
+            ext = "gif"
+        elif "webp" in header:
+            ext = "webp"
+
+        import uuid
+        safe_filename = f"{prefix}_{uuid.uuid4().hex[:8]}.{ext}"
+
+        # Map folder to directory
+        folder_map = {
+            "products": PRODUCT_IMAGES_DIR,
+            "receipts": RECEIPT_IMAGES_DIR,
+            "locations": LOCATION_IMAGES_DIR,
+        }
+        folder_dir = folder_map.get(folder, PRODUCT_IMAGES_DIR)
+
+        # Try Supabase Storage first
+        if supabase_admin:
+            try:
+                bucket_name = "kjy-images"
+                storage_path = f"{folder}/{safe_filename}"
+                mime = f"image/{ext}"
+                supabase_admin.storage.from_(bucket_name).upload(
+                    file=file_bytes,
+                    path=storage_path,
+                    file_options={"content-type": mime, "upsert": "true"}
+                )
+                public_url = supabase_admin.storage.from_(bucket_name).get_public_url(storage_path)
+                return {"url": public_url, "status": "ok"}
+            except Exception as e:
+                print(f"Supabase storage upload failed ({e}), saving locally")
+
+        # Local fallback
+        local_path = os.path.join(folder_dir, safe_filename)
+        with open(local_path, "wb") as f:
+            f.write(file_bytes)
+
+        rel_path = local_path.replace("\\", "/")
+        return {"url": f"/{rel_path}", "status": "ok"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save image: {e}")
 
 
 # ============================================================
