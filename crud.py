@@ -10,6 +10,23 @@ from datetime import datetime
 
 logger = logging.getLogger("crud")
 
+# คอลัมน์ที่มีอยู่จริงบน Supabase products table (PostgreSQL)
+# ใช้ filter payload ก่อนส่งไป Supabase เพื่อป้องกัน request พัง
+SUPABASE_PRODUCT_COLUMNS = {
+    "sku", "name", "category", "cost_price", "sale_price", "stock_qty",
+    "location_code", "image_url", "location_image_url", "status",
+    "description", "min_stock", "location"
+}
+
+def _sanitize_supabase_payload(payload: dict, allowed_columns: set = None) -> dict:
+    """
+    กรอง payload ให้มีเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase
+    ป้องกัน request พังเมื่อส่งคอลัมน์ที่ไม่มีอยู่
+    """
+    if allowed_columns is None:
+        allowed_columns = SUPABASE_PRODUCT_COLUMNS
+    return {k: v for k, v in payload.items() if k in allowed_columns}
+
 
 # ============================================================
 # AUDIT LOG
@@ -180,7 +197,10 @@ def add_product_staff(name, sale_price=0, category=None, sku=None,
                 "min_stock": int(min_stock or 5),
                 "status": "active"
             }
-            res = supabase_admin.from_("products").insert(payload).execute()
+            # กรองเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase
+            # ป้องกัน request พังถ้ายังไม่ได้รัน migration
+            safe_payload = _sanitize_supabase_payload(payload)
+            res = supabase_admin.from_("products").insert(safe_payload).execute()
             if res.data:
                 pid = res.data[0]["id"]
                 add_audit_log("เพิ่มสินค้า", f"เพิ่มสินค้า '{name}' (SKU: {sku})", "staff")
@@ -223,7 +243,10 @@ def update_product_staff(product_id: int, **fields):
                     sp_payload["location_image_url"] = v
                 else:
                     sp_payload[k] = v
-            supabase_admin.from_("products").update(sp_payload).eq("id", product_id).execute()
+            # กรองเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase
+            # ป้องกัน request พังถ้ายังไม่ได้รัน migration
+            safe_payload = _sanitize_supabase_payload(sp_payload)
+            supabase_admin.from_("products").update(safe_payload).eq("id", product_id).execute()
             add_audit_log("แก้ไขสินค้า", f"แก้ไขสินค้า id={product_id}: {', '.join(filtered_fields.keys())}", "staff")
             return
         except Exception as e:
