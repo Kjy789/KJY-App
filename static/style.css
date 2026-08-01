@@ -1447,6 +1447,26 @@ body {
 
 .btn-lg { padding: 12px 22px; font-size: 15px; }
 
+.btn-danger {
+    padding: 9px 18px;
+    background: var(--red);
+    border: none;
+    border-radius: var(--radius-md);
+    color: white;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    transition: var(--tr);
+    box-shadow: 0 3px 12px rgba(239,68,68,0.25);
+    text-decoration: none;
+}
+.btn-danger:hover { background: #DC2626; transform: translateY(-1px); }
+.btn-danger:disabled { opacity: 0.5; cursor: not-allowed; filter: none; transform: none; box-shadow: none; }
+
 /* ============================================================
    TOAST
    ============================================================ */

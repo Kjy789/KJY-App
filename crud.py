@@ -10,11 +10,20 @@ from datetime import datetime
 
 logger = logging.getLogger("crud")
 
-# คอลัมน์ที่มีอยู่จริงบน Supabase products table (PostgreSQL)
-# ใช้ filter payload ก่อนส่งไป Supabase เพื่อป้องกัน request พัง
+# ============================================================
+# SUPABASE COLUMN COMPATIBILITY
+# ============================================================
+# คอลัมน์ที่มีอยู่จริงบน Supabase products table (ตาม schema.sql)
+# หมายเหตุ: location / min_stock / description ต้องรัน migration 
+# migrations/002_add_missing_product_columns.sql ก่อน จึงจะใช้ได้จริงบน Supabase
+# ถ้ายังไม่รัน migration ฟิลด์เหล่านี้จะถูกกรองออกโดยอัตโนมัติ (ไม่ทำให้ request พัง)
 SUPABASE_PRODUCT_COLUMNS = {
     "sku", "name", "category", "cost_price", "sale_price", "stock_qty",
-    "location_code", "image_url", "location_image_url", "status",
+    "location_code", "image_url", "location_image_url", "status"
+}
+
+# คอลัมน์เพิ่มเติมที่ต้องรัน migration ก่อน (002_add_missing_product_columns.sql)
+SUPABASE_MIGRATED_COLUMNS = {
     "description", "min_stock", "location"
 }
 
@@ -26,6 +35,14 @@ def _sanitize_supabase_payload(payload: dict, allowed_columns: set = None) -> di
     if allowed_columns is None:
         allowed_columns = SUPABASE_PRODUCT_COLUMNS
     return {k: v for k, v in payload.items() if k in allowed_columns}
+
+def _sanitize_supabase_payload_with_migration(payload: dict) -> dict:
+    """
+    กรอง payload สำหรับกรณีที่รัน migration 002 แล้ว
+    รวมคอลัมน์ migration (description, min_stock, location) ด้วย
+    """
+    allowed = SUPABASE_PRODUCT_COLUMNS | SUPABASE_MIGRATED_COLUMNS
+    return {k: v for k, v in payload.items() if k in allowed}
 
 
 # ============================================================
@@ -99,15 +116,14 @@ def list_products_staff(keyword=None, location_code=None, category=None):
     """
     if supabase_client:
         try:
-            query = supabase_client.from_("products").select(
-                "id, sku, name, category, sale_price, stock_qty, location_code, location, min_stock, description, image_url, location_image_url, status, updated_at"
-            ).eq("status", "active")
+            # ใช้ select("*") เพื่อให้ไม่พังถ้าคอลัมน์ migration ยังไม่มีบน Supabase
+            query = supabase_client.from_("products").select("*").eq("status", "active")
 
             if keyword:
                 # Multi-keyword for Supabase - use OR for each keyword
                 kw_parts = keyword.strip().split()
                 for kw in kw_parts:
-                    query = query.or_(f"name.ilike.%{kw}%,sku.ilike.%{kw}%,location_code.ilike.%{kw}%,location.ilike.%{kw}%")
+                    query = query.or_(f"name.ilike.%{kw}%,sku.ilike.%{kw}%,location_code.ilike.%{kw}%")
             if location_code:
                 query = query.eq("location_code", location_code)
             if category:
@@ -118,10 +134,17 @@ def list_products_staff(keyword=None, location_code=None, category=None):
             for item in res.data:
                 item["image_path"] = item.get("image_url")
                 item["location_image_path"] = item.get("location_image_url")
+                # ป้องกัน KeyError ถ้าคอลัมน์ migration ยังไม่มี
+                if "min_stock" not in item:
+                    item["min_stock"] = 5
+                if "description" not in item:
+                    item["description"] = ""
+                if "location" not in item:
+                    item["location"] = ""
                 products.append(item)
             return products
         except Exception as e:
-            logger.warning(f"Supabase query failed ({e}), falling back to local DB")
+            logger.error(f"Supabase list_products_staff query failed: {e} — falling back to local DB")
 
     query = """
         SELECT id, sku, name, category, sale_price, stock_qty, location_code, location, min_stock, description,
@@ -156,16 +179,21 @@ def get_product_staff(product_id: int):
     """ดึงข้อมูลสินค้าชิ้นเดียวสำหรับ Staff (ไม่มีราคาต้นทุน)"""
     if supabase_client:
         try:
-            res = supabase_client.from_("products").select(
-                "id, sku, name, category, sale_price, stock_qty, location_code, location, min_stock, description, image_url, location_image_url, status, updated_at"
-            ).eq("id", product_id).execute()
+            res = supabase_client.from_("products").select("*").eq("id", product_id).execute()
             if res.data:
                 p = res.data[0]
                 p["image_path"] = p.get("image_url")
                 p["location_image_path"] = p.get("location_image_url")
+                # ป้องกัน KeyError ถ้าคอลัมน์ migration ยังไม่มี
+                if "min_stock" not in p:
+                    p["min_stock"] = 5
+                if "description" not in p:
+                    p["description"] = ""
+                if "location" not in p:
+                    p["location"] = ""
                 return p
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Supabase get_product_staff query failed: {e} — falling back to local DB")
 
     with db_session() as conn:
         row = conn.execute(
@@ -259,6 +287,53 @@ def update_product_staff(product_id: int, **fields):
     with db_session() as conn:
         conn.execute(f"UPDATE products SET {set_clause} WHERE id = ?", values)
         add_audit_log("แก้ไขสินค้า", f"แก้ไขสินค้า id={product_id}: {', '.join(filtered_fields.keys())}", "staff")
+
+
+def delete_product_staff(product_id: int):
+    """
+    Owner ลบสินค้า (ทั้งจาก Supabase และ SQLite)
+    ลบ record ที่เกี่ยวข้องใน cost_history ด้วย (ON DELETE CASCADE)
+    """
+    # 1. ตรวจสอบว่าสินค้ามีอยู่จริง
+    deleted = False
+
+    # 2. ลบจาก Supabase (ถ้าพร้อมใช้งาน)
+    if supabase_admin:
+        try:
+            # ตรวจสอบว่ามีสินค้าอยู่ก่อนลบ
+            check = supabase_admin.from_("products").select("id, name").eq("id", product_id).execute()
+            if check.data:
+                product_name = check.data[0].get("name", f"id={product_id}")
+                supabase_admin.from_("products").delete().eq("id", product_id).execute()
+                deleted = True
+                add_audit_log("ลบสินค้า", f"ลบสินค้า '{product_name}' (id={product_id}) จาก Supabase", "owner")
+                logger.info(f"Deleted product id={product_id} from Supabase")
+        except Exception as e:
+            logger.error(f"[DELETE] Supabase delete failed for product id={product_id}: {e}")
+
+    # 3. ลบจาก SQLite local fallback (เสมอ เพื่อให้ sync กัน)
+    try:
+        with db_session() as conn:
+            # ตรวจสอบว่ามีสินค้า
+            p = conn.execute(
+                "SELECT name FROM products WHERE id = ?", (product_id,)
+            ).fetchone()
+            if p:
+                pname = p["name"]
+                conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
+                # cost_history ตารางมี ON DELETE CASCADE อยู่แล้ว แต่ลบตรงๆ เผื่อไว้
+                conn.execute("DELETE FROM cost_history WHERE product_id = ?", (product_id,))
+                conn.execute("DELETE FROM receipt_items WHERE product_id = ?", (product_id,))
+                deleted = True
+                add_audit_log("ลบสินค้า", f"ลบสินค้า '{pname}' (id={product_id}) จาก SQLite", "owner")
+                logger.info(f"Deleted product id={product_id} from SQLite")
+    except Exception as e:
+        logger.error(f"[DELETE] SQLite delete failed for product id={product_id}: {e}")
+
+    if not deleted:
+        raise ValueError(f"ไม่พบสินค้า id={product_id}")
+
+    return product_id
 
 
 def process_checkout(cart_items: list, payment_type: str = "cash", total_amount: float = 0.0):

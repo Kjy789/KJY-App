@@ -1423,6 +1423,13 @@ function openEditProduct(productId) {
                 };
                 if (phLoc) phLoc.classList.add('hidden');
             }
+
+            // Show/hide delete button based on role (Owner only)
+            var delBtn = document.getElementById('btn-delete-product');
+            if (delBtn) {
+                if (currentRole === 'owner') delBtn.classList.remove('hidden');
+                else delBtn.classList.add('hidden');
+            }
         })
         .catch(function(err) {
             showToast('ไม่สามารถโหลดข้อมูลสินค้า: ' + err.message, 'error');
@@ -1577,6 +1584,64 @@ async function submitEdit(event) {
     } finally {
         submitBtn.disabled = false;
         submitBtn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> บันทึกการแก้ไข';
+    }
+}
+
+// ==========================================================================
+// DELETE PRODUCT (Owner only)
+// ==========================================================================
+
+var deleteTargetProductId = null;
+
+function openDeleteConfirm() {
+    var id = document.getElementById('e-id').value;
+    var name = document.getElementById('e-name').value.trim() || 'สินค้านี้';
+    deleteTargetProductId = id;
+    document.getElementById('delete-product-name').textContent = name;
+    openModal('modal-delete-confirm');
+}
+
+async function confirmDeleteProduct() {
+    if (!deleteTargetProductId) return;
+
+    var btn = document.getElementById('btn-delete-confirm');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-sm"></span> กำลังลบ...';
+
+    try {
+        var res = await fetch('/api/owner/products/' + deleteTargetProductId, {
+            method: 'DELETE'
+        });
+
+        if (!res.ok) {
+            var errData = await res.json().catch(function() { return {}; });
+            throw new Error(errData.detail || 'HTTP ' + res.status);
+        }
+
+        // 1. Close delete confirm modal
+        closeModal('modal-delete-confirm');
+
+        // 2. Close edit + detail modals
+        closeModal('modal-edit');
+        closeModal('modal-detail');
+
+        // 3. Remove deleted product from cart if present
+        removeFromCart(parseInt(deleteTargetProductId));
+
+        // 4. Show toast
+        showToast('✅ ลบสินค้าเรียบร้อยแล้ว', 'success');
+
+        // 5. Refresh lists
+        loadStockTable();
+        loadPOSProducts();
+        if (currentRole === 'owner') loadOwnerReports();
+
+        deleteTargetProductId = null;
+    } catch (err) {
+        showToast('❌ ลบสินค้าไม่สำเร็จ: ' + err.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-trash-can"></i> ลบสินค้า';
     }
 }
 

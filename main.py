@@ -396,6 +396,22 @@ def get_owner_products(
     return products
 
 
+@app.delete("/api/owner/products/{product_id}")
+def delete_owner_product(product_id: int):
+    """
+    Owner ลบสินค้า
+    *** เฉพาะ Owner เท่านั้น (ต้องผ่าน PIN ก่อน) ***
+    """
+    try:
+        crud.delete_product_staff(product_id)
+        return {"status": "ok", "deleted_id": product_id}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"Delete product error: {e}")
+        raise HTTPException(status_code=500, detail=f"ลบสินค้าไม่สำเร็จ: {e}")
+
+
 @app.get("/api/owner/dashboard")
 def get_owner_dashboard():
     """สรุปยอดการเงิน มูลค่าคลังสินค้า และรายการแจ้งเตือนสำหรับ Owner"""
