@@ -617,26 +617,103 @@ def export_stock_report_csv():
 
 @app.get("/api/owner/export-excel")
 def export_stock_report_excel():
-    """ส่งออกรายงานสต็อกสินค้าเป็นไฟล์ Excel (.xlsx)"""
+    """
+    ส่งออกรายงานสต็อกสินค้าเป็นไฟล์ Excel (.xlsx)
+    คอลัมน์: ID, ชื่อสินค้า, SKU/Barcode, หมวดหมู่, ราคาขาย, ราคาต้นทุน,
+    จำนวนคงเหลือ, สต็อกขั้นต่ำ, รหัสตำแหน่ง, ตำแหน่งจัดเก็บ, รายละเอียด/สเปก, วันที่อัปเดต
+    """
     try:
         data = crud.export_stock_report_data()
     except Exception:
         data = []
     try:
         import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Stock Report"
 
-        headers = ["SKU/Barcode", "ชื่อสินค้า", "หมวดหมู่", "ตำแหน่งจัดเก็บ", "จำนวนสต็อก", "ต้นทุนล่าสุด", "ราคาขาย", "มูลค่ารวมต้นทุน", "มูลค่ารวมราคาขาย", "กำไรต่อชิ้น", "อัตรากำไร %", "วันที่อัปเดตล่าสุด"]
+        headers = [
+            "ID", "ชื่อสินค้า", "SKU/Barcode", "หมวดหมู่", "ราคาขาย",
+            "ราคาต้นทุน", "จำนวนคงเหลือ", "สต็อกขั้นต่ำ", "รหัสตำแหน่ง",
+            "ตำแหน่งจัดเก็บ", "รายละเอียด/สเปก", "วันที่อัปเดตล่าสุด"
+        ]
         ws.append(headers)
 
+        # --- จัดฟอร์แมต Header ---
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        header_fill = PatternFill(start_color="2B5797", end_color="2B5797", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        thin_border = Border(
+            left=Side(style="thin"),
+            right=Side(style="thin"),
+            top=Side(style="thin"),
+            bottom=Side(style="thin"),
+        )
+
+        for col_idx, _ in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = thin_border
+
+        # --- ใส่ข้อมูล ---
         for row in data:
             ws.append([row[h] for h in headers])
+
+        # --- จัดฟอร์แมตข้อมูล ---
+        money_font = Font(number_format='#,##0.00')
+        for row_idx in range(2, ws.max_row + 1):
+            for col_idx in range(1, len(headers) + 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell.border = thin_border
+                cell.alignment = Alignment(vertical="center", wrap_text=(col_idx in (2, 11)))
+
+                # ฟอร์แมตตัวเลขราคา (คอลัมน์ E=ราคาขาย, F=ราคาต้นทุน)
+                if col_idx in (5, 6):
+                    cell.number_format = '#,##0.00'
+                # ฟอร์แมตตัวเลขจำนวน (คอลัมน์ G=จำนวนคงเหลือ, H=สต็อกขั้นต่ำ)
+                elif col_idx in (7, 8):
+                    cell.number_format = '#,##0'
+
+        # --- กำหนดความกว้างคอลัมน์อัตโนมัติ ---
+        column_widths = {
+            1: 8,    # ID
+            2: 30,   # ชื่อสินค้า
+            3: 18,   # SKU/Barcode
+            4: 16,   # หมวดหมู่
+            5: 12,   # ราคาขาย
+            6: 12,   # ราคาต้นทุน
+            7: 12,   # จำนวนคงเหลือ
+            8: 12,   # สต็อกขั้นต่ำ
+            9: 14,   # รหัสตำแหน่ง
+            10: 22,  # ตำแหน่งจัดเก็บ
+            11: 35,  # รายละเอียด/สเปก
+            12: 20,  # วันที่อัปเดตล่าสุด
+        }
+        for col_idx, width in column_widths.items():
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+        # --- Freeze Header Row ---
+        ws.freeze_panes = "A2"
+
+        # --- Auto Filter ---
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{ws.max_row}"
 
         out = io.BytesIO()
         wb.save(out)
         out.seek(0)
+
+        # บันทึก AuditLog เมื่อมีการ Export
+        crud.add_audit_log(
+            "EXPORT_PRODUCTS_EXCEL",
+            f"ส่งออกรายงานสินค้าคลังเป็น Excel จำนวน {len(data)} รายการ",
+            "owner"
+        )
+
         return StreamingResponse(
             out,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

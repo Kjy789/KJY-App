@@ -509,22 +509,24 @@ def export_stock_report_data():
     """
     ดึงข้อมูลสินค้าในคลังสินค้าเพื่อส่งออกรายงาน Excel/CSV
     จัดเรียงข้อมูลแบบ Vertical Layout (Row 1 Header, Row 2..N ข้อมูล)
+    ครอบคลุมคอลัมน์: ID, ชื่อ, SKU, หมวดหมู่, ราคาขาย, ต้นทุน, สต็อก, Min Stock,
+    ตำแหน่ง, รายละเอียด, วันที่อัปเดต
     """
     products = list_products_owner()
     report_rows = []
     for p in products:
         report_rows.append({
-            "SKU/Barcode": p.get("sku") or "-",
+            "ID": p.get("id", ""),
             "ชื่อสินค้า": p.get("name") or "-",
+            "SKU/Barcode": p.get("sku") or "-",
             "หมวดหมู่": p.get("category") or "-",
-            "ตำแหน่งจัดเก็บ": p.get("location_code") or "-",
-            "จำนวนสต็อก": p.get("stock_qty", 0),
-            "ต้นทุนล่าสุด": p.get("latest_cost", 0.0),
             "ราคาขาย": p.get("sale_price", 0.0),
-            "มูลค่ารวมต้นทุน": p.get("total_cost_val", 0.0),
-            "มูลค่ารวมราคาขาย": p.get("total_sale_val", 0.0),
-            "กำไรต่อชิ้น": p.get("profit", 0.0),
-            "อัตรากำไร %": p.get("margin_pct", 0.0),
+            "ราคาต้นทุน": p.get("latest_cost", 0.0),
+            "จำนวนคงเหลือ": p.get("stock_qty", 0),
+            "สต็อกขั้นต่ำ": p.get("min_stock", 5),
+            "รหัสตำแหน่ง": p.get("location_code") or "-",
+            "ตำแหน่งจัดเก็บ": p.get("location") or "-",
+            "รายละเอียด/สเปก": p.get("description") or "",
             "วันที่อัปเดตล่าสุด": str(p.get("updated_at") or "-")
         })
     return report_rows

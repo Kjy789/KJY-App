@@ -104,7 +104,10 @@
                     <h2><i class="fa-solid fa-boxes-stacked"></i> คลังสินค้า</h2>
                     <p class="sub">จัดการสต็อก เพิ่มสินค้าใหม่ ค้นหาตำแหน่ง</p>
                 </div>
-                <button class="btn-primary" onclick="openAddProduct()"><i class="fa-solid fa-plus"></i> เพิ่มสินค้า</button>
+                <div class="hstack">
+                    <button class="btn-green owner-only hidden" onclick="exportProductsExcel()" title="ส่งออกรายงานสินค้าคลังเป็น Excel"><i class="fa-solid fa-file-excel"></i> 📊 Export Excel</button>
+                    <button class="btn-primary" onclick="openAddProduct()"><i class="fa-solid fa-plus"></i> เพิ่มสินค้า</button>
+                </div>
             </div>
             <div class="search-bar">
                 <div class="search-wrap wide">

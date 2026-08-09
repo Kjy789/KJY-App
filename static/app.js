@@ -1801,6 +1801,24 @@ function addToCartFromDetail() {
 }
 
 // ==========================================================================
+// EXPORT PRODUCTS TO EXCEL (Owner only)
+// ==========================================================================
+
+/**
+ * ดาวน์โหลดรายงานสินค้าคลังเป็นไฟล์ Excel (.xlsx)
+ * เรียกใช้ API /api/owner/export-excel
+ */
+function exportProductsExcel() {
+    if (currentRole !== 'owner') {
+        showToast('ต้องเข้าสู่โหมด Owner เพื่อ Export Excel', 'error');
+        return;
+    }
+
+    showToast('กำลังสร้างไฟล์ Excel...', 'success');
+    window.location.href = '/api/owner/export-excel';
+}
+
+// ==========================================================================
 // AUDIT LOG
 // ==========================================================================
 
