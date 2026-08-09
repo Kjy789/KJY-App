@@ -13,6 +13,62 @@
 'use strict';
 
 // ==========================================================================
+// IMAGE COMPRESSION HELPER
+// ==========================================================================
+
+/**
+ * บีบอัดรูปภาพจากกล้องมือถือก่อนอัปโหลด
+ * - ย่อขนาดให้กว้าง/สูงสุดไม่เกิน 800px
+ * - บีบอัดคุณภาพ JPEG/WEBP เหลือ 0.7-0.8
+ * - คืนค่าเป็น Promise<Blob> เพื่อให้ Base64 เล็กลง (ไม่เกิน 300-500KB)
+ */
+function compressImage(file, maxWidth = 800, quality = 0.75) {
+    return new Promise(function(resolve, reject) {
+        if (!file || !file.type || file.type.indexOf('image/') !== 0) {
+            resolve(file);
+            return;
+        }
+
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var img = new Image();
+            img.onload = function() {
+                var canvas = document.createElement('canvas');
+                var scale = Math.min(1, maxWidth / Math.max(img.width, img.height));
+                canvas.width = Math.round(img.width * scale);
+                canvas.height = Math.round(img.height * scale);
+
+                var ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                // เลือกฟอร์แมต: JPEG สำหรับภาพทั่วไป, WEBP ถ้ารองรับ
+                var mimeType = 'image/jpeg';
+                if (file.type === 'image/webp' && canvas.toDataURL('image/webp').length > 0) {
+                    mimeType = 'image/webp';
+                }
+
+                canvas.toBlob(function(blob) {
+                    if (blob) {
+                        resolve(blob);
+                    } else {
+                        // Fallback: ส่งไฟล์เดิมถ้า canvas ไม่รองรับ
+                        resolve(file);
+                    }
+                }, mimeType, quality);
+            };
+            img.onerror = function() {
+                resolve(file);
+            };
+            img.src = e.target.result;
+        };
+        reader.onerror = function() {
+            resolve(file);
+        };
+        reader.readAsDataURL(file);
+    });
+}
+
+// ==========================================================================
 // STATE
 // ==========================================================================
 
@@ -688,7 +744,10 @@ async function loadStockTable(keyword) {
                 '<td class="c">' + locPhotoBtn + '</td>' +
                 '<td><div class="action-btns">' +
                 '<button class="btn-icon" onclick="addToCart(' + p.id + ',\'' + escHtml(rawName) + '\',' + price + ',' + stock + ',\'' + escHtml(imgSrc) + '\')" title="เพิ่มลงตะกร้า"' + (stock === 0 ? ' disabled' : '') + '>' +
-                '<i class="fa-solid fa-cart-plus"></i></button></div></td></tr>';
+                '<i class="fa-solid fa-cart-plus"></i></button>' +
+                '<button class="btn-icon" onclick="openEditProduct(' + p.id + ')" title="แก้ไขสินค้า"><i class="fa-solid fa-pen-to-square"></i></button>' +
+                '<button class="btn-icon" style="color:var(--red)" onclick="deleteProductDirect(' + p.id + ',\'' + escHtml(rawName) + '\')" title="ลบสินค้า"><i class="fa-solid fa-trash-can"></i></button>' +
+                '</div></td></tr>';
         }
         tbody.innerHTML = html;
 
@@ -820,24 +879,28 @@ function openAddProduct() {
 function onProdImg(event) {
     var file = event.target.files[0];
     if (!file) return;
-    prodImageFile = file;
-    prodImageBase64 = null; // Reset, will be set after FileReader loads
 
-    var reader = new FileReader();
-    reader.onload = function(e) {
-        var dataUrl = e.target.result;
-        prodImageBase64 = dataUrl; // Store Base64 Data URL for upload
-        var preview = document.getElementById('img-prod');
-        if (preview) {
-            preview.src = dataUrl;
-            preview.classList.remove('hidden');
-        }
-        var ph = document.getElementById('ph-prod');
-        if (ph) ph.classList.add('hidden');
-    };
-    reader.readAsDataURL(file);
+    // บีบอัดรูปก่อนอัปโหลด (กัน Error 1024KB Limit)
+    compressImage(file).then(function(compressed) {
+        prodImageFile = compressed;
+        prodImageBase64 = null; // Reset, will be set after FileReader loads
 
-    aiScanProductImage(file);
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var dataUrl = e.target.result;
+            prodImageBase64 = dataUrl; // Store Base64 Data URL for upload
+            var preview = document.getElementById('img-prod');
+            if (preview) {
+                preview.src = dataUrl;
+                preview.classList.remove('hidden');
+            }
+            var ph = document.getElementById('ph-prod');
+            if (ph) ph.classList.add('hidden');
+        };
+        reader.readAsDataURL(compressed);
+
+        aiScanProductImage(compressed);
+    });
 }
 
 async function aiScanProductImage(file) {
@@ -875,22 +938,26 @@ async function aiScanProductImage(file) {
 function onLocImg(event) {
     var file = event.target.files[0];
     if (!file) return;
-    locImageFile = file;
-    locImageBase64 = null;
 
-    var reader = new FileReader();
-    reader.onload = function(e) {
-        var dataUrl = e.target.result;
-        locImageBase64 = dataUrl; // Store Base64 Data URL for upload
-        var preview = document.getElementById('img-loc');
-        if (preview) {
-            preview.src = dataUrl;
-            preview.classList.remove('hidden');
-        }
-        var ph = document.getElementById('ph-loc');
-        if (ph) ph.classList.add('hidden');
-    };
-    reader.readAsDataURL(file);
+    // บีบอัดรูปก่อนอัปโหลด (กัน Error 1024KB Limit)
+    compressImage(file).then(function(compressed) {
+        locImageFile = compressed;
+        locImageBase64 = null;
+
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var dataUrl = e.target.result;
+            locImageBase64 = dataUrl; // Store Base64 Data URL for upload
+            var preview = document.getElementById('img-loc');
+            if (preview) {
+                preview.src = dataUrl;
+                preview.classList.remove('hidden');
+            }
+            var ph = document.getElementById('ph-loc');
+            if (ph) ph.classList.add('hidden');
+        };
+        reader.readAsDataURL(compressed);
+    });
 }
 
 async function submitAdd(event) {
@@ -1429,8 +1496,7 @@ function openEditProduct(productId) {
             // Show/hide delete button based on role (Owner only)
             var delBtn = document.getElementById('btn-delete-product');
             if (delBtn) {
-                if (currentRole === 'owner') delBtn.classList.remove('hidden');
-                else delBtn.classList.add('hidden');
+                delBtn.classList.remove('hidden');
             }
         })
         .catch(function(err) {
@@ -1449,41 +1515,49 @@ var editExistingLocImageUrl = ''; // Stores current location image URL from DB
 function onEditProdImg(event) {
     var file = event.target.files[0];
     if (!file) return;
-    editProdImageFile = file;
-    editProdImageBase64 = null;
-    var reader = new FileReader();
-    reader.onload = function(e) {
-        var dataUrl = e.target.result;
-        editProdImageBase64 = dataUrl;
-        var preview = document.getElementById('img-edit-prod');
-        if (preview) {
-            preview.src = dataUrl;
-            preview.classList.remove('hidden');
-        }
-        var ph = document.getElementById('ph-edit-prod');
-        if (ph) ph.classList.add('hidden');
-    };
-    reader.readAsDataURL(file);
+
+    // บีบอัดรูปก่อนอัปโหลด (กัน Error 1024KB Limit)
+    compressImage(file).then(function(compressed) {
+        editProdImageFile = compressed;
+        editProdImageBase64 = null;
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var dataUrl = e.target.result;
+            editProdImageBase64 = dataUrl;
+            var preview = document.getElementById('img-edit-prod');
+            if (preview) {
+                preview.src = dataUrl;
+                preview.classList.remove('hidden');
+            }
+            var ph = document.getElementById('ph-edit-prod');
+            if (ph) ph.classList.add('hidden');
+        };
+        reader.readAsDataURL(compressed);
+    });
 }
 
 function onEditLocImg(event) {
     var file = event.target.files[0];
     if (!file) return;
-    editLocImageFile = file;
-    editLocImageBase64 = null;
-    var reader = new FileReader();
-    reader.onload = function(e) {
-        var dataUrl = e.target.result;
-        editLocImageBase64 = dataUrl;
-        var preview = document.getElementById('img-edit-loc');
-        if (preview) {
-            preview.src = dataUrl;
-            preview.classList.remove('hidden');
-        }
-        var ph = document.getElementById('ph-edit-loc');
-        if (ph) ph.classList.add('hidden');
-    };
-    reader.readAsDataURL(file);
+
+    // บีบอัดรูปก่อนอัปโหลด (กัน Error 1024KB Limit)
+    compressImage(file).then(function(compressed) {
+        editLocImageFile = compressed;
+        editLocImageBase64 = null;
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var dataUrl = e.target.result;
+            editLocImageBase64 = dataUrl;
+            var preview = document.getElementById('img-edit-loc');
+            if (preview) {
+                preview.src = dataUrl;
+                preview.classList.remove('hidden');
+            }
+            var ph = document.getElementById('ph-edit-loc');
+            if (ph) ph.classList.add('hidden');
+        };
+        reader.readAsDataURL(compressed);
+    });
 }
 
 async function submitEdit(event) {
@@ -1592,10 +1666,22 @@ async function submitEdit(event) {
 }
 
 // ==========================================================================
-// DELETE PRODUCT (Owner only)
+// DELETE PRODUCT (Staff & Owner)
 // ==========================================================================
 
 var deleteTargetProductId = null;
+
+/**
+ * เปิด Modal ยืนยันการลบสินค้าโดยตรงจากตารางคลัง (ไม่ต้องผ่านหน้าแก้ไข)
+ * @param {number} productId - รหัสสินค้า
+ * @param {string} productName - ชื่อสินค้า
+ */
+function deleteProductDirect(productId, productName) {
+    deleteTargetProductId = productId;
+    var nameEl = document.getElementById('delete-product-name');
+    if (nameEl) nameEl.textContent = productName || 'สินค้านี้';
+    openModal('modal-delete-confirm');
+}
 
 function openDeleteConfirm() {
     var id = document.getElementById('e-id').value;
@@ -1613,9 +1699,14 @@ async function confirmDeleteProduct() {
     btn.innerHTML = '<span class="spinner-sm"></span> กำลังลบ...';
 
     try {
-        var res = await fetch('/api/owner/products/' + deleteTargetProductId, {
+        var res = await fetch('/api/staff/products/' + deleteTargetProductId, {
             method: 'DELETE'
         });
+        if (!res.ok) {
+            res = await fetch('/api/owner/products/' + deleteTargetProductId, {
+                method: 'DELETE'
+            });
+        }
 
         if (!res.ok) {
             var errData = await res.json().catch(function() { return {}; });
@@ -1874,7 +1965,9 @@ loadStockTable = function(keyword) {
                         '<td><div class="action-btns">' +
                         '<button class="btn-icon" onclick="openEditProduct(' + p.id + ')" title="แก้ไข"><i class="fa-solid fa-pen"></i></button>' +
                         '<button class="btn-icon" onclick="addToCart(' + p.id + ',\'' + escHtml(rawName) + '\',' + price + ',' + stock + ',\'' + escHtml(imgSrc) + '\')" title="เพิ่มลงตะกร้า"' + (stock === 0 ? ' disabled' : '') + '>' +
-                        '<i class="fa-solid fa-cart-plus"></i></button></div></td></tr>';
+                        '<i class="fa-solid fa-cart-plus"></i></button>' +
+                        '<button class="btn-icon" style="color:var(--red)" onclick="deleteProductDirect(' + p.id + ',\'' + escHtml(rawName) + '\')" title="ลบสินค้า"><i class="fa-solid fa-trash-can"></i></button>' +
+                        '</div></td></tr>';
                 }
                 tbody.innerHTML = html;
             })

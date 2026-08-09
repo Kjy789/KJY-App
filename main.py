@@ -14,6 +14,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from starlette.formparsers import MultiPartParser
 
 from database import init_db, supabase_admin
 import crud
@@ -21,6 +22,23 @@ from config import RECEIPT_IMAGES_DIR, PRODUCT_IMAGES_DIR, LOCATION_IMAGES_DIR, 
 
 # PIN Code for Boss Mode (default: 1234)
 BOSS_PIN = "1234"
+
+# ============================================================
+# INCREASE UPLOAD LIMIT (แก้ Error 1024KB Part size limit)
+# ============================================================
+# Starlette default max_part_size = 1MB (1024KB)
+# Override ให้รองรับรูปถ่ายจากมือถือได้สูงสุด 10MB
+MAX_UPLOAD_SIZE_MB = 10
+MAX_PART_SIZE = MAX_UPLOAD_SIZE_MB * 1024 * 1024  # 10MB
+
+class CustomMultiPartParser(MultiPartParser):
+    """Subclass เพิ่ม max_part_size ให้รองรับไฟล์ใหญ่ (รูปกล้องมือถือ)"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_part_size = MAX_PART_SIZE
+
+import starlette.formparsers
+starlette.formparsers.MultiPartParser = CustomMultiPartParser
 
 
 @asynccontextmanager
@@ -150,6 +168,9 @@ def call_gemini_ocr(image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
     from google import genai
     from google.genai import types
 
+    # Compress image to prevent Gemini API 1024KB Part size limit error
+    compressed_bytes, compressed_mime = compress_image_bytes(image_bytes, max_size=800, quality=75)
+
     client = genai.Client(api_key=api_key)
     prompt = """อ่านบิล/ใบเสร็จสั่งของในรูปนี้ แล้วตอบกลับเป็น JSON array เท่านั้น
 ห้ามมีข้อความอื่นนอกเหนือจาก JSON ในรูปแบบนี้:
@@ -161,7 +182,7 @@ def call_gemini_ocr(image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
             model="gemini-flash-latest",
             contents=[
                 prompt,
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                types.Part.from_bytes(data=compressed_bytes, mime_type=compressed_mime),
             ],
         )
     except Exception as e:
@@ -288,6 +309,9 @@ async def scan_product(file: UploadFile = File(...)):
     from google import genai
     from google.genai import types
 
+    # Compress image to prevent Gemini API 1024KB Part size limit error
+    compressed_bytes, compressed_mime = compress_image_bytes(image_bytes, max_size=800, quality=75)
+
     client = genai.Client(api_key=api_key)
     prompt = """ดูรูปภาพสินค้านี้แล้วตอบกลับเป็น JSON เท่านั้น:
 {
@@ -299,7 +323,7 @@ async def scan_product(file: UploadFile = File(...)):
     try:
         response = client.models.generate_content(
             model="gemini-flash-latest",
-            contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)],
+            contents=[prompt, types.Part.from_bytes(data=compressed_bytes, mime_type=compressed_mime)],
         )
         text = response.text.strip()
         start = text.find('{')
@@ -450,7 +474,6 @@ def get_owner_products(
 def delete_owner_product(product_id: int):
     """
     Owner ลบสินค้า
-    *** เฉพาะ Owner เท่านั้น (ต้องผ่าน PIN ก่อน) ***
     """
     try:
         crud.delete_product_staff(product_id)
@@ -459,6 +482,22 @@ def delete_owner_product(product_id: int):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         print(f"Delete product error: {e}")
+        raise HTTPException(status_code=500, detail=f"ลบสินค้าไม่สำเร็จ: {e}")
+
+
+@app.delete("/api/staff/products/{product_id}")
+@app.post("/api/staff/products/{product_id}/delete")
+def delete_staff_product(product_id: int):
+    """
+    Staff ลบสินค้าออกจากคลัง
+    """
+    try:
+        crud.delete_product_staff(product_id)
+        return {"status": "ok", "deleted_id": product_id}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"Delete staff product error: {e}")
         raise HTTPException(status_code=500, detail=f"ลบสินค้าไม่สำเร็จ: {e}")
 
 

@@ -19,7 +19,7 @@ logger = logging.getLogger("crud")
 # ถ้ายังไม่รัน migration ฟิลด์เหล่านี้จะถูกกรองออกโดยอัตโนมัติ (ไม่ทำให้ request พัง)
 SUPABASE_PRODUCT_COLUMNS = {
     "sku", "name", "category", "cost_price", "sale_price", "stock_qty",
-    "location_code", "image_url", "location_image_url", "status"
+        "location_code", "image_url", "location_image_url", "status", "created_at", "updated_at"
 }
 
 # คอลัมน์เพิ่มเติมที่ต้องรัน migration ก่อน (002_add_missing_product_columns.sql)
@@ -324,7 +324,7 @@ def delete_product_staff(product_id: int):
                 product_name = check.data[0].get("name", f"id={product_id}")
                 supabase_admin.from_("products").delete().eq("id", product_id).execute()
                 deleted = True
-                add_audit_log("ลบสินค้า", f"ลบสินค้า '{product_name}' (id={product_id}) จาก Supabase", "owner")
+                add_audit_log("PRODUCT_DELETE", f"ลบสินค้า '{product_name}' (id={product_id}) จาก Supabase", "staff")
                 logger.info(f"Deleted product id={product_id} from Supabase")
         except Exception as e:
             logger.error(f"[DELETE] Supabase delete failed for product id={product_id}: {e}")
@@ -343,7 +343,7 @@ def delete_product_staff(product_id: int):
                 conn.execute("DELETE FROM cost_history WHERE product_id = ?", (product_id,))
                 conn.execute("DELETE FROM receipt_items WHERE product_id = ?", (product_id,))
                 deleted = True
-                add_audit_log("ลบสินค้า", f"ลบสินค้า '{pname}' (id={product_id}) จาก SQLite", "owner")
+                add_audit_log("PRODUCT_DELETE", f"ลบสินค้า '{pname}' (id={product_id}) จาก SQLite", "staff")
                 logger.info(f"Deleted product id={product_id} from SQLite")
     except Exception as e:
         logger.error(f"[DELETE] SQLite delete failed for product id={product_id}: {e}")
