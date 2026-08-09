@@ -956,6 +956,8 @@ async function submitAdd(event) {
         formData.append('sale_price', price);
         if (imageUrl) formData.append('image_path', imageUrl);
         if (locationImageUrl) formData.append('location_image_path', locationImageUrl);
+        if (prodImageFile) formData.append('file', prodImageFile);
+        if (locImageFile) formData.append('location_file', locImageFile);
 
         var res = await fetch('/api/staff/products/add', { method: 'POST', body: formData });
         if (!res.ok) {
@@ -1555,6 +1557,8 @@ async function submitEdit(event) {
         // Always send image URLs - if no new image, send existing URL to preserve it
         formData.append('image_path', imageUrl);
         formData.append('location_image_path', locationImageUrl);
+        if (editProdImageFile) formData.append('file', editProdImageFile);
+        if (editLocImageFile) formData.append('location_file', editLocImageFile);
 
         var res = await fetch('/api/staff/products/' + id + '/edit', {
             method: 'POST',

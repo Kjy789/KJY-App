@@ -132,8 +132,12 @@ def list_products_staff(keyword=None, location_code=None, category=None):
             res = query.order("name").execute()
             products = []
             for item in res.data:
-                item["image_path"] = item.get("image_url")
-                item["location_image_path"] = item.get("location_image_url")
+                img = item.get("image_url") or item.get("image_path") or ""
+                loc_img = item.get("location_image_url") or item.get("location_image_path") or ""
+                item["image_url"] = img
+                item["image_path"] = img
+                item["location_image_url"] = loc_img
+                item["location_image_path"] = loc_img
                 # ป้องกัน KeyError ถ้าคอลัมน์ migration ยังไม่มี
                 if "min_stock" not in item:
                     item["min_stock"] = 5
@@ -172,7 +176,17 @@ def list_products_staff(keyword=None, location_code=None, category=None):
     query += " ORDER BY name"
     with db_session() as conn:
         rows = conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        products = []
+        for r in rows:
+            p = dict(r)
+            img = p.get("image_path") or p.get("image_url") or ""
+            loc_img = p.get("location_image_path") or p.get("location_image_url") or ""
+            p["image_url"] = img
+            p["image_path"] = img
+            p["location_image_url"] = loc_img
+            p["location_image_path"] = loc_img
+            products.append(p)
+        return products
 
 
 def get_product_staff(product_id: int):
@@ -182,8 +196,12 @@ def get_product_staff(product_id: int):
             res = supabase_client.from_("products").select("*").eq("id", product_id).execute()
             if res.data:
                 p = res.data[0]
-                p["image_path"] = p.get("image_url")
-                p["location_image_path"] = p.get("location_image_url")
+                img = p.get("image_url") or p.get("image_path") or ""
+                loc_img = p.get("location_image_url") or p.get("location_image_path") or ""
+                p["image_url"] = img
+                p["image_path"] = img
+                p["location_image_url"] = loc_img
+                p["location_image_path"] = loc_img
                 # ป้องกัน KeyError ถ้าคอลัมน์ migration ยังไม่มี
                 if "min_stock" not in p:
                     p["min_stock"] = 5
@@ -409,9 +427,14 @@ def list_products_owner(keyword=None, location_code=None, category=None):
                 profit = sale_price - latest_cost
                 margin_pct = (profit / sale_price * 100) if sale_price > 0 else 0
 
+                img = item.get("image_url") or item.get("image_path") or ""
+                loc_img = item.get("location_image_url") or item.get("location_image_path") or ""
+
                 item["latest_cost"] = latest_cost
-                item["image_path"] = item.get("image_url")
-                item["location_image_path"] = item.get("location_image_url")
+                item["image_url"] = img
+                item["image_path"] = img
+                item["location_image_url"] = loc_img
+                item["location_image_path"] = loc_img
                 item["profit"] = profit
                 item["margin_pct"] = round(margin_pct, 2)
                 item["total_cost_val"] = round(latest_cost * stock_qty, 2)

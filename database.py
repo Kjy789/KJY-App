@@ -23,6 +23,16 @@ if SUPABASE_URL and SUPABASE_KEY:
         else:
             supabase_admin = supabase_client
         logger.info("Connected to Supabase Cloud Database successfully!")
+        
+        # Ensure kjy-images bucket exists on Supabase Storage
+        try:
+            buckets = supabase_admin.storage.list_buckets()
+            bnames = [b.name for b in buckets] if buckets else []
+            if "kjy-images" not in bnames:
+                supabase_admin.storage.create_bucket("kjy-images", options={"public": True})
+                logger.info("Created public Supabase Storage bucket 'kjy-images'")
+        except Exception as bucket_err:
+            logger.info(f"Supabase bucket check: {bucket_err}")
     except Exception as e:
         logger.warning(f"Could not initialize Supabase client: {e}. Falling back to SQLite local database.")
 

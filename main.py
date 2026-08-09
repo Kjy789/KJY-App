@@ -45,37 +45,87 @@ app.mount("/images", StaticFiles(directory="images"), name="images")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
+# Helper for image compression using PIL
+def compress_image_bytes(image_bytes: bytes, max_size: int = 1200, quality: int = 85) -> tuple[bytes, str]:
+    """
+    บีบอัดและปรับขนาดรูปภาพให้อยู่ในขนาดไม่เกิน 1200px (เพื่อประหยัดพื้นที่และอัปโหลดเร็ว)
+    คืนค่า (compressed_bytes, mime_type)
+    """
+    if not image_bytes:
+        return b"", "image/jpeg"
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(image_bytes))
+        
+        # Resize thumbnail keeping aspect ratio
+        resample_filter = getattr(Image, 'Resampling', Image).LANCZOS if hasattr(Image, 'Resampling') else Image.ANTIALIAS
+        img.thumbnail((max_size, max_size), resample_filter)
+        
+        out = io.BytesIO()
+        fmt = img.format if img.format in ('JPEG', 'PNG', 'WEBP') else 'JPEG'
+        if fmt == 'JPEG' and img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+            
+        img.save(out, format=fmt, quality=quality, optimize=True)
+        mime_type = f"image/{fmt.lower()}"
+        return out.getvalue(), mime_type
+    except Exception as e:
+        print(f"PIL compression warning: {e}")
+        return image_bytes, "image/jpeg"
+
+
 # Helper for Supabase / Local Storage Upload
 async def save_uploaded_file(file: UploadFile, folder_dir: str, prefix: str = "") -> str:
-    """บันทึกไฟล์อัปโหลดลง Local หรือ Supabase Storage (ถ้าเปิดใช้งาน)"""
-    file_bytes = await file.read()
-    filename = f"{prefix}_{file.filename}" if file.filename else f"{prefix}.jpg"
-    safe_filename = "".join(c for c in filename if c.isalnum() or c in ('.', '_', '-')).strip()
+    """บันทึกไฟล์อัปโหลดลง Supabase Storage หรือ Base64 Data URL (Render-safe fallback)"""
+    raw_bytes = await file.read()
+    if not raw_bytes:
+        return ""
+        
+    compressed_bytes, mime_type = compress_image_bytes(raw_bytes)
+    ext = mime_type.split("/")[-1]
+    
+    import uuid
+    safe_filename = f"{prefix}_{uuid.uuid4().hex[:8]}.{ext}"
+    folder_name = os.path.basename(folder_dir) or "products"
 
-    # If Supabase Storage admin client is configured, upload to bucket
+    # 1. ลองอัปโหลดขึ้น Supabase Storage (ถ้าต่อ Supabase อยู่)
     if supabase_admin:
         try:
             bucket_name = "kjy-images"
-            storage_path = f"{os.path.basename(folder_dir)}/{safe_filename}"
-            res = supabase_admin.storage.from_(bucket_name).upload(
-                file=file_bytes,
+            # ตรวจสอบและสร้าง bucket ถ้ายังไม่มี
+            try:
+                buckets = supabase_admin.storage.list_buckets()
+                bnames = [b.name for b in buckets] if buckets else []
+                if bucket_name not in bnames:
+                    supabase_admin.storage.create_bucket(bucket_name, options={"public": True})
+            except Exception:
+                pass
+
+            storage_path = f"{folder_name}/{safe_filename}"
+            bucket = supabase_admin.storage.from_(bucket_name)
+            bucket.upload(
                 path=storage_path,
-                file_options={"content-type": file.content_type or "image/jpeg", "upsert": "true"}
+                file=compressed_bytes,
+                file_options={"content-type": mime_type, "upsert": "true"}
             )
-            # Public URL
-            public_url = supabase_admin.storage.from_(bucket_name).get_public_url(storage_path)
-            return public_url
+            public_url = bucket.get_public_url(storage_path)
+            if public_url:
+                return public_url
         except Exception as e:
-            print(f"Supabase storage upload failed ({e}), saving locally")
+            print(f"⚠️ Supabase storage upload failed ({e}), using Base64 Data URL fallback")
 
-    # Local fallback
-    local_path = os.path.join(folder_dir, safe_filename)
-    with open(local_path, "wb") as f:
-        f.write(file_bytes)
+    # 2. กรณีไม่มี Supabase Storage หรืออัปโหลดพัง (Render ephemeral disk):
+    # บันทึกลง disk ท้องถิ่นไว้ด้วย
+    try:
+        local_path = os.path.join(folder_dir, safe_filename)
+        with open(local_path, "wb") as f:
+            f.write(compressed_bytes)
+    except Exception:
+        pass
 
-    # Return relative URL path
-    rel_path = local_path.replace("\\", "/")
-    return f"/{rel_path}"
+    # และคืนค่าเป็น Base64 Data URL เพื่อเซฟลงฐานข้อมูลถาวร (รูปไม่หายแน่นอนเมื่อ Render รีสตาร์ท!)
+    b64_str = base64.b64encode(compressed_bytes).decode("utf-8")
+    return f"data:{mime_type};base64,{b64_str}"
 
 
 # ============================================================
@@ -683,29 +733,48 @@ async def upload_image_base64(payload: dict):
         }
         folder_dir = folder_map.get(folder, PRODUCT_IMAGES_DIR)
 
-        # Try Supabase Storage first
+        # Compress image before saving
+        compressed_bytes, mime_type = compress_image_bytes(file_bytes)
+        ext = mime_type.split("/")[-1]
+        safe_filename = f"{prefix}_{uuid.uuid4().hex[:8]}.{ext}"
+
+        # 1. Try Supabase Storage first
         if supabase_admin:
             try:
                 bucket_name = "kjy-images"
+                try:
+                    buckets = supabase_admin.storage.list_buckets()
+                    bnames = [b.name for b in buckets] if buckets else []
+                    if bucket_name not in bnames:
+                        supabase_admin.storage.create_bucket(bucket_name, options={"public": True})
+                except Exception:
+                    pass
+
                 storage_path = f"{folder}/{safe_filename}"
-                mime = f"image/{ext}"
-                supabase_admin.storage.from_(bucket_name).upload(
-                    file=file_bytes,
+                bucket = supabase_admin.storage.from_(bucket_name)
+                bucket.upload(
                     path=storage_path,
-                    file_options={"content-type": mime, "upsert": "true"}
+                    file=compressed_bytes,
+                    file_options={"content-type": mime_type, "upsert": "true"}
                 )
-                public_url = supabase_admin.storage.from_(bucket_name).get_public_url(storage_path)
-                return {"url": public_url, "status": "ok"}
+                public_url = bucket.get_public_url(storage_path)
+                if public_url:
+                    return {"url": public_url, "status": "ok"}
             except Exception as e:
-                print(f"Supabase storage upload failed ({e}), saving locally")
+                print(f"⚠️ Supabase storage upload failed ({e}), using Base64 Data URL fallback")
 
-        # Local fallback
-        local_path = os.path.join(folder_dir, safe_filename)
-        with open(local_path, "wb") as f:
-            f.write(file_bytes)
+        # 2. Save local copy (best effort)
+        try:
+            local_path = os.path.join(folder_dir, safe_filename)
+            with open(local_path, "wb") as f:
+                f.write(compressed_bytes)
+        except Exception:
+            pass
 
-        rel_path = local_path.replace("\\", "/")
-        return {"url": f"/{rel_path}", "status": "ok"}
+        # 3. Base64 Data URL fallback (render-safe, saved permanently in DB)
+        b64_str = base64.b64encode(compressed_bytes).decode("utf-8")
+        fallback_url = f"data:{mime_type};base64,{b64_str}"
+        return {"url": fallback_url, "status": "ok"}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save image: {e}")
