@@ -919,6 +919,172 @@ def get_staff_mock_products_fallback():
 
 
 # ============================================================
+# AI SALES ASSISTANT
+# ============================================================
+
+@app.post("/api/ai/sales-assistant")
+async def ai_sales_assistant(payload: dict):
+    """
+    ผู้ช่วยขาย AI — ตอบคำถามเกี่ยวกับสินค้า สต็อก ราคา และคำนวณ
+    """
+    message = (payload.get("message") or "").strip()
+    context = payload.get("context") or ""
+    cart = payload.get("cart") or []
+
+    if not message:
+        return {"reply": "กรุณาพิมพ์คำถามเกี่ยวกับสินค้าครับ"}
+
+    api_key = GEMINI_API_KEY
+    if not api_key:
+        api_txt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api.txt")
+        if os.path.exists(api_txt_path):
+            with open(api_txt_path, "r", encoding="utf-8") as f:
+                api_key = f.read().strip()
+
+    if not api_key:
+        return {"reply": "ขออภัย ระบบ AI ยังไม่พร้อมใช้งาน (ไม่พบ API Key)"}
+
+    try:
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=api_key)
+
+        cart_text = ""
+        if cart and len(cart) > 0:
+            cart_text = "\n\nตะกร้าสินค้าปัจจุบัน:\n"
+            for item in cart:
+                cart_text += f"- {item.get('name','-')} จำนวน {item.get('qty',0)} ชิ้น ราคา/ชิ้น ฿{item.get('price',0)}\n"
+            cart_text += f"\nยอดรวมตะกร้า: ฿{sum(item.get('price',0)*item.get('qty',0) for item in cart):.2f}"
+
+        prompt = f"""คุณคือผู้ช่วยขาย AI สำหรับร้านคำเจริญเกษตรยนต์ (KJY)
+ช่วยตอบคำถามลูกค้า/พนักงานเกี่ยวกับสินค้า สต็อก ราคา และคำนวณต่างๆ เป็นภาษาไทย
+
+ข้อมูลสินค้าที่มีอยู่:
+{context}
+{cart_text}
+
+คำถาม: {message}
+
+ตอบเป็นภาษาไทย สั้นๆ ตรงประเด็น ไม่ต้องยาวเกินไป
+ถ้าเป็นคำถามเกี่ยวกับราคา/สต็อก ให้อ้างอิงจากข้อมูลด้านบน
+ถ้าเป็นคำถามคำนวณ ให้คำนวณและแสดงผลลัพธ์
+ถ้าไม่รู้จักสินค้า ให้บอกว่าไม่มีข้อมูลและแนะนำให้เช็คกับพนักงาน"""
+
+        response = client.models.generate_content(
+            model="gemini-flash-latest",
+            contents=[prompt],
+        )
+        reply = response.text.strip()
+        return {"reply": reply}
+
+    except Exception as e:
+        print(f"AI sales assistant error: {e}")
+        return {"reply": f"ขออภัย เกิดข้อผิดพลาด: {str(e)}"}
+
+
+# ============================================================
+# EXCEL/CSV IMPORT
+# ============================================================
+
+@app.post("/api/owner/import-products")
+async def import_products(file: UploadFile = File(...)):
+    """
+    นำเข้าสินค้าจากไฟล์ Excel (.xlsx/.xls) หรือ CSV
+    คอลัมน์ที่รองรับ: name, sku, category, sale_price, cost_price, stock_qty, min_stock, location_code, location, description
+    """
+    if not file:
+        raise HTTPException(status_code=400, detail="ไม่พบไฟล์")
+
+    filename = file.filename or ""
+    ext = filename.lower().split('.')[-1] if '.' in filename else ''
+
+    if ext not in ('xlsx', 'xls', 'csv'):
+        raise HTTPException(status_code=400, detail="รองรับเฉพาะไฟล์ .xlsx .xls .csv")
+
+    try:
+        contents = await file.read()
+        if not contents:
+            raise HTTPException(status_code=400, detail="ไฟล์ว่างเปล่า")
+
+        # Parse file
+        rows = []
+        if ext == 'csv':
+            import csv as csv_module
+            text = contents.decode('utf-8-sig')
+            reader = csv_module.DictReader(io.StringIO(text))
+            rows = list(reader)
+        else:
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(contents))
+                ws = wb.active
+                headers = [str(cell.value).strip() if cell.value else "" for cell in ws[1]]
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    row_dict = {}
+                    for idx, header in enumerate(headers):
+                        if header:
+                            val = row[idx] if idx < len(row) else None
+                            row_dict[header] = val
+                    rows.append(row_dict)
+            except ImportError:
+                raise HTTPException(status_code=500, detail="ไม่พบไลบรารี openpyxl กรุณาติดตั้ง: pip install openpyxl")
+
+        if not rows:
+            return {"imported": 0, "message": "ไม่พบข้อมูลในไฟล์"}
+
+        # Map and import
+        imported = 0
+        errors = []
+
+        for idx, row in enumerate(rows, start=2):
+            try:
+                name = str(row.get('name', '') or row.get('ชื่อสินค้า', '') or '').strip()
+                if not name:
+                    errors.append(f"แถว {idx}: ไม่มีชื่อสินค้า")
+                    continue
+
+                sku = str(row.get('sku', '') or row.get('SKU', '') or '').strip() or None
+                category = str(row.get('category', '') or row.get('หมวดหมู่', '') or '').strip() or None
+                sale_price = float(row.get('sale_price', 0) or row.get('ราคาขาย', 0) or 0)
+                cost_price = float(row.get('cost_price', 0) or row.get('ราคาต้นทุน', 0) or 0)
+                stock_qty = int(row.get('stock_qty', 0) or row.get('สต็อก', 0) or 0)
+                min_stock = int(row.get('min_stock', 5) or row.get('สต็อกขั้นต่ำ', 5) or 5)
+                location_code = str(row.get('location_code', '') or row.get('รหัสตำแหน่ง', '') or '').strip() or None
+                location = str(row.get('location', '') or row.get('ตำแหน่งจัดเก็บ', '') or '').strip() or None
+                description = str(row.get('description', '') or row.get('รายละเอียด', '') or '').strip() or None
+
+                # Use crud to add product
+                crud.add_product_staff(
+                    name=name,
+                    sku=sku,
+                    category=category,
+                    sale_price=sale_price,
+                    cost_price=cost_price,
+                    stock_qty=stock_qty,
+                    min_stock=min_stock,
+                    location_code=location_code,
+                    location=location,
+                    description=description
+                )
+                imported += 1
+
+            except Exception as e:
+                errors.append(f"แถว {idx}: {str(e)}")
+                continue
+
+        msg = f"นำเข้าสำเร็จ {imported} รายการ"
+        if errors:
+            msg += f" (มีข้อผิดพลาด {len(errors)} รายการ)"
+
+        return {"imported": imported, "message": msg, "errors": errors[:10]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Import ไม่สำเร็จ: {str(e)}")
+
+
+# ============================================================
 # RUN COMMAND
 # ============================================================
 

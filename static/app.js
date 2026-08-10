@@ -340,6 +340,32 @@ function pickCategory(cat, btn) {
     loadPOSProducts(kw, cat);
 }
 
+function addNewCategory() {
+    var catInput = document.getElementById('a-cat');
+    if (!catInput) return;
+    var newCat = prompt('เพิ่มหมวดหมู่ใหม่:\n(เช่น น้ำมัน, สายพาน, อะไหล่เกษตร)');
+    if (!newCat || !newCat.trim()) return;
+    newCat = newCat.trim();
+
+    // Add to datalist
+    var datalist = document.getElementById('cat-list');
+    if (datalist) {
+        var exists = false;
+        for (var i = 0; i < datalist.options.length; i++) {
+            if (datalist.options[i].value === newCat) { exists = true; break; }
+        }
+        if (!exists) {
+            var opt = document.createElement('option');
+            opt.value = newCat;
+            datalist.appendChild(opt);
+        }
+    }
+
+    // Set value
+    catInput.value = newCat;
+    showToast('เพิ่มหมวดหมู่ "' + newCat + '" แล้ว', 'success');
+}
+
 // ==========================================================================
 // CART MANAGEMENT
 // ==========================================================================
@@ -967,8 +993,12 @@ async function submitAdd(event) {
     var category = document.getElementById('a-cat') ? document.getElementById('a-cat').value.trim() : '';
     var sku = document.getElementById('a-sku') ? document.getElementById('a-sku').value.trim() : '';
     var stock = document.getElementById('a-qty') ? document.getElementById('a-qty').value : '0';
+    var minStock = document.getElementById('a-min') ? document.getElementById('a-min').value : '5';
     var location = document.getElementById('a-loc') ? document.getElementById('a-loc').value.trim() : '';
+    var locationText = document.getElementById('a-location') ? document.getElementById('a-location').value.trim() : '';
     var price = document.getElementById('a-price') ? document.getElementById('a-price').value : '0';
+    var cost = document.getElementById('a-cost') ? document.getElementById('a-cost').value : '0';
+    var desc = document.getElementById('a-desc') ? document.getElementById('a-desc').value.trim() : '';
 
     if (!name) {
         showToast('กรุณากรอกชื่อสินค้า', 'error');
@@ -1019,8 +1049,12 @@ async function submitAdd(event) {
         formData.append('category', category);
         formData.append('sku', sku);
         formData.append('stock_qty', stock);
+        formData.append('min_stock', minStock);
         formData.append('location_code', location);
+        formData.append('location', locationText);
         formData.append('sale_price', price);
+        formData.append('description', desc);
+        if (cost) formData.append('cost_price', cost);
         if (imageUrl) formData.append('image_path', imageUrl);
         if (locationImageUrl) formData.append('location_image_path', locationImageUrl);
         if (prodImageFile) formData.append('file', prodImageFile);
@@ -1032,9 +1066,23 @@ async function submitAdd(event) {
             throw new Error(errData.detail || 'บันทึกสินค้าไม่สำเร็จ');
         }
 
+        // Reset form
+        document.getElementById('form-add').reset();
+        prodImageFile = null; prodImageBase64 = null;
+        locImageFile = null; locImageBase64 = null;
+        var previewProd = document.getElementById('img-prod');
+        var phProd = document.getElementById('ph-prod');
+        if (previewProd) { previewProd.src = ''; previewProd.classList.add('hidden'); }
+        if (phProd) phProd.classList.remove('hidden');
+        var previewLoc = document.getElementById('img-loc');
+        var phLoc = document.getElementById('ph-loc');
+        if (previewLoc) { previewLoc.src = ''; previewLoc.classList.add('hidden'); }
+        if (phLoc) phLoc.classList.remove('hidden');
+
         closeModal('modal-add');
         showToast('✅ เพิ่มสินค้า "' + name + '" เรียบร้อยแล้ว', 'success');
 
+        // Auto reload products in current view
         if (currentView === 'stock') loadStockTable();
         else if (currentView === 'pos') {
             var kw = document.getElementById('pos-search') ? document.getElementById('pos-search').value.trim() : '';
@@ -2018,6 +2066,194 @@ document.addEventListener('DOMContentLoaded', function() {
 // This handles the onerror fallback for all dynamically created images
 // The static HTML already has onerror on relevant img tags
 // For dynamic content, the render functions already have onerror handlers
+
+// ==========================================================================
+// DYNAMIC CATEGORY TABS
+// ==========================================================================
+
+async function loadCategoryTabs() {
+    try {
+        var res = await fetch('/api/staff/products?limit=100');
+        if (!res.ok) return;
+        var products = await res.json();
+        if (!products || products.length === 0) return;
+
+        // Extract unique categories
+        var cats = {};
+        for (var i = 0; i < products.length; i++) {
+            var cat = products[i].category;
+            if (cat && !cats[cat]) cats[cat] = true;
+        }
+
+        var catList = Object.keys(cats);
+        if (catList.length <= 1) return; // Don't rebuild if only 1 category
+
+        var chipsContainer = document.querySelector('.chips');
+        if (!chipsContainer) return;
+
+        // Keep "ทั้งหมด" button, replace others
+        var allBtn = chipsContainer.querySelector('.chip');
+        if (!allBtn) return;
+
+        var html = allBtn.outerHTML;
+        for (var j = 0; j < catList.length; j++) {
+            var cat = catList[j];
+            if (cat === 'ALL') continue;
+            var icon = '📦';
+            if (cat.indexOf('น็อต') !== -1 || cat.indexOf('สกรู') !== -1) icon = '🔩';
+            else if (cat.indexOf('สายพาน') !== -1) icon = '⚙️';
+            else if (cat.indexOf('กรอง') !== -1) icon = '🌀';
+            else if (cat.indexOf('น้ำมัน') !== -1) icon = '🛢️';
+            else if (cat.indexOf('ยาง') !== -1) icon = '🔘';
+            else if (cat.indexOf('อะไหล่') !== -1 || cat.indexOf('เกษตร') !== -1) icon = '🚜';
+            html += '<button class="chip" onclick="pickCategory(\'' + escHtml(cat) + '\',this)">' + icon + ' ' + escHtml(cat) + '</button>';
+        }
+        chipsContainer.innerHTML = html;
+    } catch (e) {
+        console.warn('Failed to load category tabs:', e);
+    }
+}
+
+// ==========================================================================
+// AI SALES ASSISTANT FLOATING WIDGET
+// ==========================================================================
+
+var salesAssistantOpen = false;
+var salesAssistantMessages = [];
+
+function toggleSalesAssistant() {
+    salesAssistantOpen = !salesAssistantOpen;
+    var widget = document.getElementById('sales-assistant-widget');
+    if (widget) {
+        if (salesAssistantOpen) {
+            widget.classList.remove('hidden');
+            widget.classList.add('show');
+            if (salesAssistantMessages.length === 0) {
+                addAssistantMessage('สวัสดีครับ! 👋 ฉันคือผู้ช่วยขาย AI\nฉันสามารถช่วย:\n• ค้นหาสินค้า\n• เช็คสต็อก\n• แนะนำสินค้า\n• คำนวณราคา\n\nพิมพ์คำถามได้เลยครับ!');
+            }
+        } else {
+            widget.classList.remove('show');
+            widget.classList.add('hidden');
+        }
+    }
+}
+
+function addAssistantMessage(text, isUser) {
+    var chatBody = document.getElementById('assistant-chat-body');
+    if (!chatBody) return;
+
+    var msgDiv = document.createElement('div');
+    msgDiv.className = 'assistant-msg ' + (isUser ? 'user' : 'bot');
+    msgDiv.textContent = text;
+    chatBody.appendChild(msgDiv);
+    chatBody.scrollTop = chatBody.scrollHeight;
+
+    salesAssistantMessages.push({ text: text, isUser: isUser });
+}
+
+async function sendAssistantMessage() {
+    var input = document.getElementById('assistant-input');
+    if (!input) return;
+    var message = input.value.trim();
+    if (!message) return;
+
+    // Add user message
+    addAssistantMessage(message, true);
+    input.value = '';
+
+    // Show typing indicator
+    var typingDiv = document.createElement('div');
+    typingDiv.id = 'assistant-typing';
+    typingDiv.className = 'assistant-msg bot';
+    typingDiv.textContent = 'กำลังคิด...';
+    var chatBody = document.getElementById('assistant-chat-body');
+    if (chatBody) chatBody.appendChild(typingDiv);
+    if (chatBody) chatBody.scrollTop = chatBody.scrollHeight;
+
+    try {
+        // Build context from current products
+        var context = '';
+        if (productsCache && productsCache.length > 0) {
+            context = 'สินค้าที่มีอยู่:\n';
+            for (var i = 0; i < Math.min(productsCache.length, 10); i++) {
+                var p = productsCache[i];
+                context += '- ' + p.name + ' (SKU: ' + (p.sku || '-') + ') ราคา: ฿' + (p.sale_price || 0) + ' สต็อก: ' + (p.stock_qty || 0) + '\n';
+            }
+        }
+
+        var payload = {
+            message: message,
+            context: context,
+            cart: cart.map(function(item) {
+                return { name: item.name, qty: item.qty, price: item.price };
+            })
+        };
+
+        var res = await fetch('/api/ai/sales-assistant', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        // Remove typing indicator
+        var typing = document.getElementById('assistant-typing');
+        if (typing) typing.remove();
+
+        if (!res.ok) {
+            var errData = await res.json().catch(function() { return {}; });
+            throw new Error(errData.detail || 'HTTP ' + res.status);
+        }
+
+        var data = await res.json();
+        var reply = data.reply || 'ขออภัย ฉันไม่เข้าใจคำถาม กรุณาลองใหม่';
+        addAssistantMessage(reply, false);
+
+    } catch (err) {
+        var typing = document.getElementById('assistant-typing');
+        if (typing) typing.remove();
+        addAssistantMessage('❌ เกิดข้อผิดพลาด: ' + err.message, false);
+    }
+}
+
+// ==========================================================================
+// EXCEL/CSV IMPORT
+// ==========================================================================
+
+async function importProductsFromFile(file) {
+    if (!file) return;
+
+    var formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        var res = await fetch('/api/owner/import-products', { method: 'POST', body: formData });
+        if (!res.ok) {
+            var errData = await res.json().catch(function() { return {}; });
+            throw new Error(errData.detail || 'Import ไม่สำเร็จ');
+        }
+
+        var data = await res.json();
+        showToast('✅ Import สำเร็จ! เพิ่มสินค้า ' + (data.imported || 0) + ' รายการ', 'success');
+
+        // Refresh views
+        loadStockTable();
+        loadPOSProducts();
+        if (currentRole === 'owner') loadOwnerReports();
+
+    } catch (err) {
+        showToast('❌ Import ไม่สำเร็จ: ' + err.message, 'error');
+    }
+}
+
+function openImportModal() {
+    openModal('modal-import');
+}
+
+function handleImportFile(event) {
+    var file = event.target.files[0];
+    if (!file) return;
+    importProductsFromFile(file);
+}
 
 // ==========================================================================
 // ENHANCED LOW STOCK ALERT ON DASHBOARD

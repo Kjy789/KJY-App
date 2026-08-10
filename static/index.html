@@ -106,6 +106,7 @@
                 </div>
                 <div class="hstack">
                     <button class="btn-green owner-only hidden" onclick="exportProductsExcel()" title="ส่งออกรายงานสินค้าคลังเป็น Excel"><i class="fa-solid fa-file-excel"></i> 📊 Export Excel</button>
+                    <button class="btn-outline owner-only hidden" onclick="openImportModal()" title="นำเข้าสินค้าจาก Excel/CSV"><i class="fa-solid fa-file-import"></i> Import</button>
                     <button class="btn-primary" onclick="openAddProduct()"><i class="fa-solid fa-plus"></i> เพิ่มสินค้า</button>
                 </div>
             </div>
@@ -312,13 +313,27 @@
             <form id="form-add" onsubmit="submitAdd(event)" class="add-form">
                 <div class="form-group"><label>ชื่อสินค้า <b class="req">*</b></label><input id="a-name" required placeholder="น็อตหกเหลี่ยม M10" class="input"></div>
                 <div class="row-2">
-                    <div class="form-group"><label>หมวดหมู่</label><input id="a-cat" placeholder="น็อต-สกรู" class="input" list="cat-list"><datalist id="cat-list"><option value="น็อต-สกรู"><option value="สายพาน"><option value="กรองอากาศ"><option value="น้ำมัน"><option value="ยาง"><option value="อะไหล่เกษตร"></datalist></div>
+                    <div class="form-group"><label>หมวดหมู่</label>
+                        <div style="display:flex;gap:6px">
+                            <input id="a-cat" placeholder="น็อต-สกรู" class="input" list="cat-list" style="flex:1">
+                            <button type="button" class="btn-outline" onclick="addNewCategory()" title="เพิ่มหมวดหมู่ใหม่"><i class="fa-solid fa-plus"></i></button>
+                        </div>
+                        <datalist id="cat-list"><option value="น็อต-สกรู"><option value="สายพาน"><option value="กรองอากาศ"><option value="น้ำมัน"><option value="ยาง"><option value="อะไหล่เกษตร"></datalist>
+                    </div>
                     <div class="form-group"><label>SKU / บาร์โค้ด</label><div class="input-scan"><input id="a-sku" placeholder="NUT-M10" class="input"><button type="button" class="scan-sm" onclick="openScanner('sku')"><i class="fa-solid fa-barcode"></i></button></div></div>
                 </div>
                 <div class="row-3">
                     <div class="form-group"><label>สต็อก <b class="req">*</b></label><input id="a-qty" type="number" min="0" value="1" required class="input"></div>
-                    <div class="form-group"><label>ตำแหน่ง</label><input id="a-loc" placeholder="A-01-05" class="input"></div>
+                    <div class="form-group"><label>สต็อกขั้นต่ำ</label><input id="a-min" type="number" min="0" value="5" class="input"></div>
                     <div class="form-group"><label>ราคาขาย ฿</label><input id="a-price" type="number" step="0.01" min="0" placeholder="0" class="input"></div>
+                </div>
+                <div class="row-2">
+                    <div class="form-group"><label>ราคาต้นทุน ฿</label><input id="a-cost" type="number" step="0.01" min="0" placeholder="0" class="input"></div>
+                    <div class="form-group"><label>ตำแหน่งจัดเก็บ</label><input id="a-location" placeholder="เช่น ชั้นวาง A ตู้ 1" class="input"></div>
+                </div>
+                <div class="form-group"><label>รหัสตำแหน่ง (Location Code)</label><input id="a-loc" placeholder="A-01-05" class="input"></div>
+                <div class="form-group"><label>รายละเอียด / สเปกสินค้า</label>
+                    <div class="desc-row"><textarea id="a-desc" class="input" rows="2" placeholder="สเปกสินค้า..."></textarea><button type="button" class="btn-ai-spec" onclick="generateSpec('add')" title="ให้ AI ช่วยเขียนรายละเอียด"><i class="fa-solid fa-wand-magic-sparkles"></i></button></div>
                 </div>
             </form>
         </div>
@@ -473,6 +488,51 @@
 
 <!-- Toast -->
 <div id="toast" class="toast hidden"><i id="toast-icon" class="fa-solid fa-circle-check"></i><span id="toast-msg">OK</span></div>
+
+<!-- AI Sales Assistant Floating Widget -->
+<div id="sales-assistant-widget" class="sales-assistant-widget hidden">
+    <div class="assistant-header">
+        <div class="assistant-title"><i class="fa-solid fa-robot"></i> ผู้ช่วยขาย AI</div>
+        <button class="assistant-close" onclick="toggleSalesAssistant()">&times;</button>
+    </div>
+    <div class="assistant-chat" id="assistant-chat-body">
+        <!-- Messages will be inserted here -->
+    </div>
+    <div class="assistant-input-row">
+        <input type="text" id="assistant-input" class="assistant-input" placeholder="พิมพ์คำถามเกี่ยวกับสินค้า..." onkeydown="if(event.key==='Enter')sendAssistantMessage()">
+        <button class="assistant-send" onclick="sendAssistantMessage()"><i class="fa-solid fa-paper-plane"></i></button>
+    </div>
+</div>
+
+<!-- Sales Assistant FAB -->
+<button class="sales-fab" id="sales-fab" onclick="toggleSalesAssistant()" title="ผู้ช่วยขาย AI">
+    <i class="fa-solid fa-robot"></i>
+</button>
+
+<!-- Excel/CSV Import Modal -->
+<div class="modal-overlay hidden" id="modal-import">
+    <div class="modal medium">
+        <div class="modal-head"><h3><i class="fa-solid fa-file-import"></i> นำเข้าสินค้าจาก Excel / CSV</h3><button class="close" onclick="closeModal('modal-import')">&times;</button></div>
+        <div class="modal-body">
+            <div class="dropzone" style="padding:32px" onclick="document.getElementById('import-file-input').click()">
+                <i class="fa-solid fa-cloud-arrow-up" style="font-size:32px;color:var(--blue);margin-bottom:8px"></i>
+                <p class="drop-title">เลือกไฟล์ Excel (.xlsx, .xls) หรือ CSV</p>
+                <small>ระบบจะอ่านข้อมูลและนำเข้าสินค้าอัตโนมัติ</small>
+                <input type="file" id="import-file-input" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleImportFile(event)">
+            </div>
+            <div style="margin-top:16px;padding:12px;background:var(--bg);border-radius:var(--radius-md);font-size:12px;color:var(--text-secondary);line-height:1.8">
+                <strong style="color:var(--text)">📋 รูปแบบไฟล์ที่รองรับ:</strong><br>
+                • คอลัมน์ที่จำเป็น: <code>name</code> (ชื่อสินค้า), <code>sale_price</code> (ราคาขาย)<br>
+                • คอลัมน์เพิ่มเติม: <code>sku</code>, <code>category</code>, <code>stock_qty</code>, <code>min_stock</code>, <code>location_code</code>, <code>location</code>, <code>description</code>, <code>cost_price</code><br>
+                • ไฟล์ตัวอย่าง: <code>products_import_template.xlsx</code>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn-outline" onclick="closeModal('modal-import')">ปิด</button>
+            <button class="btn-primary" onclick="document.getElementById('import-file-input').click()"><i class="fa-solid fa-folder-open"></i> เลือกไฟล์</button>
+        </div>
+    </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>
