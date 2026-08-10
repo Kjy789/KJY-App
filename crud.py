@@ -132,6 +132,10 @@ def list_products_staff(keyword=None, location_code=None, category=None):
             res = query.order("name").execute()
             products = []
             for item in res.data:
+                # STRIP COST DATA for staff view - security rule
+                item.pop("cost_price", None)
+                item.pop("latest_cost", None)
+                
                 img = item.get("image_url") or item.get("image_path") or ""
                 loc_img = item.get("location_image_url") or item.get("location_image_path") or ""
                 item["image_url"] = img
@@ -146,7 +150,7 @@ def list_products_staff(keyword=None, location_code=None, category=None):
                 if "location" not in item:
                     item["location"] = ""
                 products.append(item)
-            logger.info(f"[SUPABASE] list_products_staff: found {len(products)} products")
+            logger.info(f"[SUPABASE] list_products_staff: found {len(products)} products (cost data stripped)")
             return products
         except Exception as e:
             import traceback
@@ -190,6 +194,9 @@ def list_products_staff(keyword=None, location_code=None, category=None):
             p["image_path"] = img
             p["location_image_url"] = loc_img
             p["location_image_path"] = loc_img
+            # STRIP COST DATA for staff view - security rule
+            p.pop("latest_cost", None)
+            p.pop("cost_price", None)
             products.append(p)
         return products
 
@@ -201,6 +208,10 @@ def get_product_staff(product_id: int):
             res = supabase_client.from_("products").select("*").eq("id", product_id).execute()
             if res.data:
                 p = res.data[0]
+                # STRIP COST DATA for staff view - security rule
+                p.pop("cost_price", None)
+                p.pop("latest_cost", None)
+                
                 img = p.get("image_url") or p.get("image_path") or ""
                 loc_img = p.get("location_image_url") or p.get("location_image_path") or ""
                 p["image_url"] = img
@@ -225,7 +236,13 @@ def get_product_staff(product_id: int):
                FROM products WHERE id = ?""", 
             (product_id,)
         ).fetchone()
-        return dict(row) if row else None
+        if row:
+            p = dict(row)
+            # STRIP COST DATA for staff view - security rule
+            p.pop("latest_cost", None)
+            p.pop("cost_price", None)
+            return p
+        return None
 
 
 def add_product_staff(name, sale_price=0, category=None, sku=None,

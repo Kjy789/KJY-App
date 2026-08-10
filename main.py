@@ -925,7 +925,7 @@ def get_staff_mock_products_fallback():
 @app.post("/api/ai/sales-assistant")
 async def ai_sales_assistant(payload: dict):
     """
-    ผู้ช่วยขาย AI — ตอบคำถามเกี่ยวกับสินค้า สต็อก ราคา และคำนวณ
+    ผู้ช่วยขาย AI & ผู้เชี่ยวชาญด้านอะไหล่ — ตอบคำถามเกี่ยวกับสินค้า สต็อก ราคา และความรู้ด้านอะไหล่
     """
     message = (payload.get("message") or "").strip()
     context = payload.get("context") or ""
@@ -956,8 +956,15 @@ async def ai_sales_assistant(payload: dict):
                 cart_text += f"- {item.get('name','-')} จำนวน {item.get('qty',0)} ชิ้น ราคา/ชิ้น ฿{item.get('price',0)}\n"
             cart_text += f"\nยอดรวมตะกร้า: ฿{sum(item.get('price',0)*item.get('qty',0) for item in cart):.2f}"
 
-        prompt = f"""คุณคือผู้ช่วยขาย AI สำหรับร้านคำเจริญเกษตรยนต์ (KJY)
-ช่วยตอบคำถามลูกค้า/พนักงานเกี่ยวกับสินค้า สต็อก ราคา และคำนวณต่างๆ เป็นภาษาไทย
+        prompt = f"""คุณคือผู้ช่วยขาย AI และผู้เชี่ยวชาญด้านอะไหล่ยานยนต์ สำหรับร้านคำเจริญเกษตรยนต์ (KJY)
+ช่วยตอบคำถามลูกค้า/พนักงานเกี่ยวกับสินค้า สต็อก ราคา และความรู้ด้านอะไหล่ เป็นภาษาไทย
+
+ความรู้เฉพาะด้านอะไหล่:
+- กรองน้ำมันเครื่อง: ใช้รุ่นตามยี่ห้อรถ เช่น รถ Kubota, Toyota, Honda, Isuzu
+- น้ำมันเครื่อง: ใช้เกรดตามข้อแนะนำของผู้ผลิต (SAE 10W-40, 15W-40 ฯลฯ)
+- สายพาน: ใช้ขนาดตามรุ่นเครื่องยนต์ เช่น Kubota B52, L3608, ฯลฯ
+- น็อต-สกรู: ใช้ขนาดตามขนาดเม็ด (M6, M8, M10) และความยาว
+- ยางรถไถ: ใช้ขนาดตามรุ่น เช่น 6.00-14, 7.50-16, ฯลฯ
 
 ข้อมูลสินค้าที่มีอยู่:
 {context}
@@ -966,7 +973,8 @@ async def ai_sales_assistant(payload: dict):
 คำถาม: {message}
 
 ตอบเป็นภาษาไทย สั้นๆ ตรงประเด็น ไม่ต้องยาวเกินไป
-ถ้าเป็นคำถามเกี่ยวกับราคา/สต็อก ให้อ้างอิงจากข้อมูลด้านบน
+ถ้าเป็นคำถามเกี่ยวกับอะไหล่รุ่นรถ ให้ตอบจากความรู้ด้านอะไหล่ แล้วตรวจสอบว่ามีสินค้าในร้านหรือไม่
+ถ้าเป็นคำถามเกี่ยวกับราคา/สต็อก ให้อ้างอิงจากข้อมูลสินค้าที่มีอยู่ด้านบน
 ถ้าเป็นคำถามคำนวณ ให้คำนวณและแสดงผลลัพธ์
 ถ้าไม่รู้จักสินค้า ให้บอกว่าไม่มีข้อมูลและแนะนำให้เช็คกับพนักงาน"""
 
@@ -1082,6 +1090,83 @@ async def import_products(file: UploadFile = File(...)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Import ไม่สำเร็จ: {str(e)}")
+
+
+# ============================================================
+# BULK PRICE ADJUSTMENT (Owner Only)
+# ============================================================
+
+@app.post("/api/owner/products/bulk-price")
+def bulk_price_adjustment(payload: dict):
+    """
+    ปรับราคาขายสินค้าแบบกลุ่ม
+    รูปแบบ:
+    - mode: "markup_percent" | "markup_amount" | "adjust_percent" | "adjust_amount"
+    - category: หมวดหมู่ที่ต้องการปรับ (ถ้าไม่ระบุ = ทั้งหมด)
+    - value: ค่าเปอร์เซ็นต์หรือจำนวนบาท
+    - apply_to_cost: true = คำนวณจากราคาทุน, false = คำนวณจากราคาขายปัจจุบัน
+    """
+    mode = payload.get("mode", "")
+    category = payload.get("category", "")
+    value = float(payload.get("value", 0) or 0)
+    apply_to_cost = payload.get("apply_to_cost", False)
+
+    if not mode or value == 0:
+        raise HTTPException(status_code=400, detail="กรุณาระบุ mode และ value")
+
+    try:
+        # Get all products (owner view with cost)
+        products = crud.list_products_owner(category=category if category else None)
+        
+        updated = 0
+        errors = []
+
+        for p in products:
+            try:
+                product_id = p.get("id")
+                current_price = float(p.get("sale_price") or 0)
+                cost_price = float(p.get("latest_cost") or 0)
+
+                if apply_to_cost and cost_price > 0:
+                    # Calculate from cost price
+                    if mode == "markup_percent":
+                        # e.g., cost 100 + 30% = 130
+                        new_price = cost_price * (1 + value / 100)
+                    elif mode == "markup_amount":
+                        # e.g., cost 100 + 30 = 130
+                        new_price = cost_price + value
+                    else:
+                        new_price = current_price
+                else:
+                    # Calculate from current sale price
+                    if mode == "adjust_percent":
+                        # e.g., price 100 + 10% = 110
+                        new_price = current_price * (1 + value / 100)
+                    elif mode == "adjust_amount":
+                        # e.g., price 100 + 10 = 110
+                        new_price = current_price + value
+                    else:
+                        new_price = current_price
+
+                # Round to 2 decimal places
+                new_price = round(new_price, 2)
+
+                # Update in database
+                crud.update_product_staff(product_id, sale_price=new_price)
+                updated += 1
+
+            except Exception as e:
+                errors.append(f"Product {product_id}: {str(e)}")
+                continue
+
+        msg = f"ปรับราคาสำเร็จ {updated} รายการ"
+        if errors:
+            msg += f" (มีข้อผิดพลาด {len(errors)} รายการ)"
+
+        return {"updated": updated, "message": msg, "errors": errors[:10]}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Bulk price adjustment failed: {str(e)}")
 
 
 # ============================================================

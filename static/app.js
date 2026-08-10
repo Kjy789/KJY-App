@@ -1066,6 +1066,22 @@ async function submitAdd(event) {
             throw new Error(errData.detail || 'บันทึกสินค้าไม่สำเร็จ');
         }
 
+        // If new category was created, add it to datalist for future use
+        if (category) {
+            var datalist = document.getElementById('cat-list');
+            if (datalist) {
+                var exists = false;
+                for (var i = 0; i < datalist.options.length; i++) {
+                    if (datalist.options[i].value === category) { exists = true; break; }
+                }
+                if (!exists) {
+                    var opt = document.createElement('option');
+                    opt.value = category;
+                    datalist.appendChild(opt);
+                }
+            }
+        }
+
         // Reset form
         document.getElementById('form-add').reset();
         prodImageFile = null; prodImageBase64 = null;
@@ -1962,7 +1978,48 @@ renderProductCard = function(p) {
     return html;
 };
 
-// Override loadStockTable to add edit button
+// ==========================================================================
+// QUICK PRICE EDIT (Owner Only - Inline Editing in Stock Table)
+// ==========================================================================
+
+function quickEditPrice(productId, currentPrice) {
+    if (currentRole !== 'owner') {
+        showToast('ต้องเข้าสู่โหมด Owner เพื่อแก้ไขราคา', 'error');
+        return;
+    }
+
+    var newPrice = prompt('แก้ไขราคาขาย (บาท):\nสินค้า ID: ' + productId, currentPrice);
+    if (newPrice === null) return; // Cancelled
+
+    newPrice = parseFloat(newPrice);
+    if (isNaN(newPrice) || newPrice < 0) {
+        showToast('กรุณากรอกราคาที่ถูกต้อง', 'error');
+        return;
+    }
+
+    var btn = event.target;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-sm"></span>';
+
+    fetch('/api/staff/products/' + productId + '/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'sale_price=' + encodeURIComponent(newPrice.toFixed(2))
+    })
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+        showToast('✅ แก้ไขราคาเรียบร้อย', 'success');
+        loadStockTable();
+        loadPOSProducts();
+    })
+    .catch(function(err) {
+        showToast('❌ แก้ไขราคาไม่สำเร็จ: ' + err.message, 'error');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-pen"></i>';
+    });
+}
+
+// Override loadStockTable to add quick price edit
 var _origLoadStockTable = loadStockTable;
 loadStockTable = function(keyword) {
     if (keyword === undefined) keyword = '';
@@ -2021,12 +2078,15 @@ loadStockTable = function(keyword) {
                         locPhotoBtn = '<span style="color:var(--text-muted);font-size:11px">-</span>';
                     }
 
+                    // Quick price edit button (owner only)
+                    var priceCell = '<td class="r" style="font-family:\'Inter\',sans-serif;font-weight:700;color:var(--blue);cursor:pointer" onclick="quickEditPrice(' + p.id + ',' + price + ')" title="คลิกเพื่อแก้ไขราคา">฿' + fmtMoney(price) + ' <i class="fa-solid fa-pen" style="font-size:10px;opacity:0.5"></i></td>';
+
                     html += '<tr><td><div class="product-cell">' + thumbHtml +
                         '<div><div class="product-name-cell">' + name + '</div><div class="product-sku-cell">' + sku + '</div></div></div></td>' +
                         '<td>' + cat + '</td>' +
                         '<td><code style="font-size:11px;color:var(--blue)">' + loc + '</code></td>' +
                         '<td class="c">' + stockTag + '</td>' +
-                        '<td class="r" style="font-family:\'Inter\',sans-serif;font-weight:700;color:var(--blue)">฿' + fmtMoney(price) + '</td>' +
+                        priceCell +
                         '<td class="c">' + locPhotoBtn + '</td>' +
                         '<td><div class="action-btns">' +
                         '<button class="btn-icon" onclick="openEditProduct(' + p.id + ')" title="แก้ไข"><i class="fa-solid fa-pen"></i></button>' +
@@ -2175,9 +2235,9 @@ async function sendAssistantMessage() {
         var context = '';
         if (productsCache && productsCache.length > 0) {
             context = 'สินค้าที่มีอยู่:\n';
-            for (var i = 0; i < Math.min(productsCache.length, 10); i++) {
+            for (var i = 0; i < Math.min(productsCache.length, 20); i++) {
                 var p = productsCache[i];
-                context += '- ' + p.name + ' (SKU: ' + (p.sku || '-') + ') ราคา: ฿' + (p.sale_price || 0) + ' สต็อก: ' + (p.stock_qty || 0) + '\n';
+                context += '- ' + p.name + ' (SKU: ' + (p.sku || '-') + ') หมวดหมู่: ' + (p.category || '-') + ' ราคา: ฿' + (p.sale_price || 0) + ' สต็อก: ' + (p.stock_qty || 0) + ' ตำแหน่ง: ' + (p.location_code || '-') + '\n';
             }
         }
 
