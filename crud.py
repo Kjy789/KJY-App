@@ -146,9 +146,14 @@ def list_products_staff(keyword=None, location_code=None, category=None):
                 if "location" not in item:
                     item["location"] = ""
                 products.append(item)
+            logger.info(f"[SUPABASE] list_products_staff: found {len(products)} products")
             return products
         except Exception as e:
-            logger.error(f"Supabase list_products_staff query failed: {e} — falling back to local DB")
+            import traceback
+            logger.error(f"[SUPABASE] list_products_staff query FAILED: {e}")
+            logger.error(f"[SUPABASE] Traceback:\n{traceback.format_exc()}")
+            logger.error(f"[SUPABASE] ตรวจสอบว่า SUPABASE_URL/KEY ถูกต้อง หรือ RLS SELECT policy มีอยู่")
+            logger.error(f"[SUPABASE] Falling back to local DB")
 
     query = """
         SELECT id, sku, name, category, sale_price, stock_qty, location_code, location, min_stock, description,
@@ -246,13 +251,22 @@ def add_product_staff(name, sale_price=0, category=None, sku=None,
             # กรองเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase
             # ป้องกัน request พังถ้ายังไม่ได้รัน migration
             safe_payload = _sanitize_supabase_payload(payload)
+            logger.info(f"[SUPABASE] Inserting product payload: {safe_payload}")
             res = supabase_admin.from_("products").insert(safe_payload).execute()
             if res.data:
                 pid = res.data[0]["id"]
+                logger.info(f"[SUPABASE] Insert success! product_id={pid}")
                 add_audit_log("เพิ่มสินค้า", f"เพิ่มสินค้า '{name}' (SKU: {sku})", "staff")
                 return pid
+            else:
+                logger.warning(f"[SUPABASE] Insert returned empty data. Response: {res}")
         except Exception as e:
-            logger.warning(f"Supabase product insert failed: {e}")
+            import traceback
+            logger.error(f"[SUPABASE] Insert FAILED for product '{name}': {e}")
+            logger.error(f"[SUPABASE] Traceback:\n{traceback.format_exc()}")
+            logger.error(f"[SUPABASE] URL={supabase_admin.supabase_url if hasattr(supabase_admin, 'supabase_url') else 'N/A'}")
+            logger.error(f"[SUPABASE] Payload sent: {safe_payload}")
+            logger.error(f"[SUPABASE] RLS check: ถ้า error เป็น 'permission denied' หรือ 'new row violates row-level security policy' แปลว่า RLS ยังบล็อกอยู่ — ต้องรัน fix_rls_permissions.sql ใน Supabase SQL Editor")
 
     with db_session() as conn:
         cur = conn.execute(
@@ -292,11 +306,17 @@ def update_product_staff(product_id: int, **fields):
             # กรองเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase
             # ป้องกัน request พังถ้ายังไม่ได้รัน migration
             safe_payload = _sanitize_supabase_payload(sp_payload)
-            supabase_admin.from_("products").update(safe_payload).eq("id", product_id).execute()
+            logger.info(f"[SUPABASE] Updating product id={product_id} payload: {safe_payload}")
+            res = supabase_admin.from_("products").update(safe_payload).eq("id", product_id).execute()
+            logger.info(f"[SUPABASE] Update success for id={product_id}, response data: {res.data}")
             add_audit_log("แก้ไขสินค้า", f"แก้ไขสินค้า id={product_id}: {', '.join(filtered_fields.keys())}", "staff")
             return
         except Exception as e:
-            logger.warning(f"Supabase update failed: {e}")
+            import traceback
+            logger.error(f"[SUPABASE] Update FAILED for product id={product_id}: {e}")
+            logger.error(f"[SUPABASE] Traceback:\n{traceback.format_exc()}")
+            logger.error(f"[SUPABASE] Payload sent: {safe_payload}")
+            logger.error(f"[SUPABASE] ตรวจสอบว่า product id={product_id} มีอยู่จริงบน Supabase หรือ RLS บล็อก UPDATE")
 
     set_clause = ", ".join(f"{k} = ?" for k in filtered_fields)
     set_clause += ", updated_at = datetime('now', 'localtime')"
@@ -322,12 +342,16 @@ def delete_product_staff(product_id: int):
             check = supabase_admin.from_("products").select("id, name").eq("id", product_id).execute()
             if check.data:
                 product_name = check.data[0].get("name", f"id={product_id}")
+                logger.info(f"[SUPABASE] Deleting product id={product_id} name='{product_name}'")
                 supabase_admin.from_("products").delete().eq("id", product_id).execute()
                 deleted = True
                 add_audit_log("PRODUCT_DELETE", f"ลบสินค้า '{product_name}' (id={product_id}) จาก Supabase", "staff")
                 logger.info(f"Deleted product id={product_id} from Supabase")
         except Exception as e:
-            logger.error(f"[DELETE] Supabase delete failed for product id={product_id}: {e}")
+            import traceback
+            logger.error(f"[SUPABASE] DELETE FAILED for product id={product_id}: {e}")
+            logger.error(f"[SUPABASE] Traceback:\n{traceback.format_exc()}")
+            logger.error(f"[SUPABASE] RLS check: DELETE policy อาจไม่มีสำหรับ role นี้ — ต้องรัน fix_rls_permissions.sql")
 
     # 3. ลบจาก SQLite local fallback (เสมอ เพื่อให้ sync กัน)
     try:
