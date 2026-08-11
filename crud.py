@@ -118,14 +118,15 @@ def list_products_staff(keyword=None, location_code=None, category=None):
     ดึงรายการสินค้าสำหรับ Staff
     *** กฎเหล็ก: ปิดกั้นการมองเห็น latest_cost / cost_price โดยเด็ดขาด ***
     รองรับ Multi-Keyword Search
+    *** รวมผลลัพธ์จากทั้ง Supabase และ SQLite เพื่อให้สินค้าที่บันทึกแล้วแสดงผลเสมอ ***
     """
-    if supabase_client:
-        try:
-            # ใช้ select("*") เพื่อให้ไม่พังถ้าคอลัมน์ migration ยังไม่มีบน Supabase
-            query = supabase_client.from_("products").select("*").eq("status", "active")
+    products = []
 
+    # 1. ดึงจาก Supabase (ถ้าพร้อมใช้งาน)
+    if supabase_admin:
+        try:
+            query = supabase_admin.from_(products).select("*").eq("status", "active")
             if keyword:
-                # Multi-keyword for Supabase - use OR for each keyword
                 kw_parts = keyword.strip().split()
                 for kw in kw_parts:
                     query = query.or_(f"name.ilike.%{kw}%,sku.ilike.%{kw}%,location_code.ilike.%{kw}%")
@@ -135,19 +136,16 @@ def list_products_staff(keyword=None, location_code=None, category=None):
                 query = query.eq("category", category)
 
             res = query.order("name").execute()
-            products = []
             for item in res.data:
                 # STRIP COST DATA for staff view - security rule
                 item.pop("cost_price", None)
                 item.pop("latest_cost", None)
-                
                 img = item.get("image_url") or item.get("image_path") or ""
                 loc_img = item.get("location_image_url") or item.get("location_image_path") or ""
                 item["image_url"] = img
                 item["image_path"] = img
                 item["location_image_url"] = loc_img
                 item["location_image_path"] = loc_img
-                # ป้องกัน KeyError ถ้าคอลัมน์ migration ยังไม่มี
                 if "min_stock" not in item:
                     item["min_stock"] = 5
                 if "description" not in item:
@@ -156,61 +154,70 @@ def list_products_staff(keyword=None, location_code=None, category=None):
                     item["location"] = ""
                 products.append(item)
             logger.info(f"[SUPABASE] list_products_staff: found {len(products)} products (cost data stripped)")
-            return products
         except Exception as e:
             import traceback
             logger.error(f"[SUPABASE] list_products_staff query FAILED: {e}")
             logger.error(f"[SUPABASE] Traceback:\n{traceback.format_exc()}")
-            logger.error(f"[SUPABASE] ตรวจสอบว่า SUPABASE_URL/KEY ถูกต้อง หรือ RLS SELECT policy มีอยู่")
             logger.error(f"[SUPABASE] Falling back to local DB")
 
-    query = """
-        SELECT id, sku, name, category, sale_price, stock_qty, location_code, location, min_stock, description,
-               image_path, location_image_path, status, created_at, updated_at
-        FROM products 
-        WHERE status = 'active'
-    """
-    params = []
-    
-    if keyword:
-        kw_condition, kw_params = build_multi_keyword_search(
-            keyword, ["name", "sku", "location_code", "location", "category"]
-        )
-        if kw_condition:
-            query += f" AND {kw_condition}"
-            params.extend(kw_params)
-    
-    if location_code:
-        query += " AND location_code = ?"
-        params.append(location_code)
-    if category:
-        query += " AND category = ?"
-        params.append(category)
+    # 2. ดึงจาก SQLite local (เพื่อรวมสินค้าที่บันทึกผ่าน fallback)
+    try:
+        query = """
+            SELECT id, sku, name, category, sale_price, stock_qty, location_code, location, min_stock, description,
+                   image_path, location_image_path, status, created_at, updated_at
+            FROM products 
+            WHERE status = 'active'
+        """
+        params = []
+        if keyword:
+            kw_condition, kw_params = build_multi_keyword_search(
+                keyword, ["name", "sku", "location_code", "location", "category"]
+            )
+            if kw_condition:
+                query += f" AND {kw_condition}"
+                params.extend(kw_params)
+        if location_code:
+            query += " AND location_code = ?"
+            params.append(location_code)
+        if category:
+            query += " AND category = ?"
+            params.append(category)
+        query += " ORDER BY name"
 
-    query += " ORDER BY name"
-    with db_session() as conn:
-        rows = conn.execute(query, params).fetchall()
-        products = []
-        for r in rows:
-            p = dict(r)
-            img = p.get("image_path") or p.get("image_url") or ""
-            loc_img = p.get("location_image_path") or p.get("location_image_url") or ""
-            p["image_url"] = img
-            p["image_path"] = img
-            p["location_image_url"] = loc_img
-            p["location_image_path"] = loc_img
-            # STRIP COST DATA for staff view - security rule
-            p.pop("latest_cost", None)
-            p.pop("cost_price", None)
-            products.append(p)
-        return products
+        with db_session() as conn:
+            rows = conn.execute(query, params).fetchall()
+            for r in rows:
+                p = dict(r)
+                img = p.get("image_path") or p.get("image_url") or ""
+                loc_img = p.get("location_image_path") or p.get("location_image_url") or ""
+                p["image_url"] = img
+                p["image_path"] = img
+                p["location_image_url"] = loc_img
+                p["location_image_path"] = loc_img
+                p.pop("latest_cost", None)
+                p.pop("cost_price", None)
+                products.append(p)
+    except Exception as e:
+        logger.warning(f"SQLite list_products_staff failed: {e}")
+
+    # 3. Deduplicate by id (Supabase มาก่อน)
+    seen = set()
+    unique = []
+    for p in products:
+        pid = p.get("id")
+        if pid in seen:
+            continue
+        seen.add(pid)
+        unique.append(p)
+
+    return unique
 
 
 def get_product_staff(product_id: int):
     """ดึงข้อมูลสินค้าชิ้นเดียวสำหรับ Staff (ไม่มีราคาต้นทุน)"""
-    if supabase_client:
+    if supabase_admin:
         try:
-            res = supabase_client.from_("products").select("*").eq("id", product_id).execute()
+            res = supabase_admin.from_(products).select("*").eq("id", product_id).execute()
             if res.data:
                 p = res.data[0]
                 # STRIP COST DATA for staff view - security rule
@@ -277,6 +284,7 @@ def add_product_staff(name, sale_price=0, cost_price=0, category=None, sku=None,
             payload = {
                 "name": name,
                 "sale_price": float(sale_price or 0),
+                "cost_price": float(cost_price or 0),
                 "category": category or None,
                 "sku": sku or None,
                 "location_code": location_code or None,
@@ -299,11 +307,9 @@ def add_product_staff(name, sale_price=0, cost_price=0, category=None, sku=None,
                     # คอลัมน์ยังไม่มีบน Supabase — ใช้ stock_qty อย่างเดียว
                     pass
 
-            # กรองเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase
-            # ป้องกัน request พังถ้ายังไม่ได้รัน migration
-            safe_payload = _sanitize_supabase_payload(payload)
-            # เพิ่มคอลัมน์ stock ใหม่ถ้าอยู่ใน payload
-            safe_payload = {k: v for k, v in payload.items() if k in (SUPABASE_PRODUCT_COLUMNS | SUPABASE_STOCK_COLUMNS)}
+            # กรองเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase (รวม migration 002 + 003)
+            allowed_columns = SUPABASE_PRODUCT_COLUMNS | SUPABASE_MIGRATED_COLUMNS | SUPABASE_STOCK_COLUMNS
+            safe_payload = {k: v for k, v in payload.items() if k in allowed_columns}
             logger.info(f"[SUPABASE] Inserting product payload: {safe_payload}")
             res = supabase_admin.from_("products").insert(safe_payload).execute()
             if res.data:
