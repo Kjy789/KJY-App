@@ -96,6 +96,7 @@ let productsCache = [];
 document.addEventListener('DOMContentLoaded', function() {
     updateCartDateDisplay();
     loadPOSProducts();
+    loadCategoryTabs();
     setInterval(updateCartDateDisplay, 60000);
     applyRole(currentRole);
 });
@@ -1109,6 +1110,8 @@ async function submitAdd(event) {
         // 2. Refresh POS Product Grid
         var kw = document.getElementById('pos-search') ? document.getElementById('pos-search').value.trim() : '';
         loadPOSProducts(kw, currentCategory);
+        // Add the saved category to the POS filter tabs immediately.
+        loadCategoryTabs();
 
     } catch (err) {
         showToast(err.message, 'error');
@@ -2170,7 +2173,7 @@ async function loadCategoryTabs() {
         }
 
         var catList = Object.keys(cats);
-        if (catList.length <= 1) return; // Don't rebuild if only 1 category
+        if (catList.length === 0) return;
 
         var chipsContainer = document.querySelector('.chips');
         if (!chipsContainer) return;
