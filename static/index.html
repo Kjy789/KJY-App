@@ -107,6 +107,7 @@
                 <div class="hstack">
                     <button class="btn-green owner-only hidden" onclick="exportProductsExcel()" title="ส่งออกรายงานสินค้าคลังเป็น Excel"><i class="fa-solid fa-file-excel"></i> 📊 Export Excel</button>
                     <button class="btn-outline owner-only hidden" onclick="openImportModal()" title="นำเข้าสินค้าจาก Excel/CSV"><i class="fa-solid fa-file-import"></i> Import</button>
+                    <button class="btn-outline owner-only hidden" onclick="openBulkPriceModal()" title="ปรับราคาสินค้ายกชุด"><i class="fa-solid fa-tags"></i> ปรับราคา</button>
                     <button class="btn-primary" onclick="openAddProduct()"><i class="fa-solid fa-plus"></i> เพิ่มสินค้า</button>
                 </div>
             </div>
@@ -323,15 +324,19 @@
                     <div class="form-group"><label>SKU / บาร์โค้ด</label><div class="input-scan"><input id="a-sku" placeholder="NUT-M10" class="input"><button type="button" class="scan-sm" onclick="openScanner('sku')"><i class="fa-solid fa-barcode"></i></button></div></div>
                 </div>
                 <div class="row-3">
-                    <div class="form-group"><label>สต็อก <b class="req">*</b></label><input id="a-qty" type="number" min="0" value="1" required class="input"></div>
+                    <div class="form-group"><label>สต็อกหน้าร้าน</label><input id="a-front-stock" type="number" min="0" value="1" class="input"></div>
+                    <div class="form-group"><label>สต็อกคลังหลังร้าน</label><input id="a-warehouse-stock" type="number" min="0" value="0" class="input"></div>
                     <div class="form-group"><label>สต็อกขั้นต่ำ</label><input id="a-min" type="number" min="0" value="5" class="input"></div>
+                </div>
+                <div class="row-3">
                     <div class="form-group"><label>ราคาขาย ฿</label><input id="a-price" type="number" step="0.01" min="0" placeholder="0" class="input"></div>
+                    <div class="form-group owner-only hidden" id="cost-field-group"><label>ราคาต้นทุน ฿</label><input id="a-cost" type="number" step="0.01" min="0" placeholder="0" class="input"></div>
+                    <div class="form-group"><label>สต็อกรวม</label><input id="a-qty" type="number" min="0" value="1" class="input" readonly title="คำนวณอัตโนมัติ = หน้าร้าน + คลัง"></div>
                 </div>
                 <div class="row-2">
-                    <div class="form-group owner-only hidden" id="cost-field-group"><label>ราคาต้นทุน ฿</label><input id="a-cost" type="number" step="0.01" min="0" placeholder="0" class="input"></div>
-                    <div class="form-group"><label>ตำแหน่งจัดเก็บ</label><input id="a-location" placeholder="เช่น ชั้นวาง A ตู้ 1" class="input"></div>
+                    <div class="form-group"><label>ตำแหน่งจัดเก็บ</label><input id="a-location" placeholder="เช่น ชั้น A ตู้ 1" class="input"></div>
+                    <div class="form-group"><label>รหัสตำแหน่ง (Location Code)</label><input id="a-loc" placeholder="A-01-05" class="input"></div>
                 </div>
-                <div class="form-group"><label>รหัสตำแหน่ง (Location Code)</label><input id="a-loc" placeholder="A-01-05" class="input"></div>
                 <div class="form-group"><label>รายละเอียด / สเปกสินค้า</label>
                     <div class="desc-row"><textarea id="a-desc" class="input" rows="2" placeholder="สเปกสินค้า..."></textarea><button type="button" class="btn-ai-spec" onclick="generateSpec('add')" title="ให้ AI ช่วยเขียนรายละเอียด"><i class="fa-solid fa-wand-magic-sparkles"></i></button></div>
                 </div>
@@ -403,9 +408,14 @@
                     <div class="form-group"><label>SKU / บาร์โค้ด</label><div class="input-scan"><input id="e-sku" placeholder="NUT-M10" class="input"><button type="button" class="scan-sm" onclick="openScanner('sku')"><i class="fa-solid fa-barcode"></i></button></div></div>
                 </div>
                 <div class="row-3">
-                    <div class="form-group"><label>สต็อก</label><input id="e-qty" type="number" min="0" value="0" class="input"></div>
+                    <div class="form-group"><label>สต็อกหน้าร้าน</label><input id="e-front-stock" type="number" min="0" value="0" class="input"></div>
+                    <div class="form-group"><label>สต็อกคลังหลังร้าน</label><input id="e-warehouse-stock" type="number" min="0" value="0" class="input"></div>
                     <div class="form-group"><label>สต็อกขั้นต่ำ</label><input id="e-min" type="number" min="0" value="5" class="input"></div>
+                </div>
+                <div class="row-3">
                     <div class="form-group"><label>ราคาขาย ฿</label><input id="e-price" type="number" step="0.01" min="0" placeholder="0" class="input"></div>
+                    <div class="form-group owner-only hidden" id="cost-edit-field-group"><label>ราคาต้นทุน ฿</label><input id="e-cost" type="number" step="0.01" min="0" placeholder="0" class="input"></div>
+                    <div class="form-group"><label>สต็อกรวม</label><input id="e-qty" type="number" min="0" value="0" class="input" readonly title="คำนวณอัตโนมัติ"></div>
                 </div>
                 <div class="row-2">
                     <div class="form-group"><label>รหัสตำแหน่ง</label><input id="e-loc" placeholder="A-01-05" class="input"></div>
@@ -530,6 +540,48 @@
         <div class="modal-foot">
             <button class="btn-outline" onclick="closeModal('modal-import')">ปิด</button>
             <button class="btn-primary" onclick="document.getElementById('import-file-input').click()"><i class="fa-solid fa-folder-open"></i> เลือกไฟล์</button>
+        </div>
+    </div>
+</div>
+
+<!-- Bulk Price Adjuster Modal (Owner Only) -->
+<div class="modal-overlay hidden" id="modal-bulk-price">
+    <div class="modal large">
+        <div class="modal-head"><h3><i class="fa-solid fa-tags"></i> ปรับราคาสินค้ายกชุด (Bulk Price)</h3><button class="close" onclick="closeModal('modal-bulk-price')">&times;</button></div>
+        <div class="modal-body">
+            <div class="form-group"><label>เลือกหมวดหมู่</label>
+                <select id="bulk-category" class="input">
+                    <option value="">ทั้งหมด</option>
+                    <option value="น็อต-สกรู">🔩 น็อต-สกรู</option>
+                    <option value="สายพาน">⚙️ สายพาน</option>
+                    <option value="กรองอากาศ">🌀 กรองอากาศ</option>
+                    <option value="น้ำมัน">🛢️ น้ำมัน</option>
+                    <option value="ยาง">🔘 ยาง</option>
+                    <option value="อะไหล่เกษตร">🚜 อะไหล่เกษตร</option>
+                </select>
+            </div>
+            <div class="form-group"><label>วิธีคำนวณ</label>
+                <select id="bulk-mode" class="input">
+                    <option value="adjust_percent">ปรับตามราคาขายปัจจุบัน (+/- %)</option>
+                    <option value="adjust_amount">ปรับตามราคาขายปัจจุบัน (+/- บาท)</option>
+                    <option value="markup_percent">คำนวณจากราคาทุน (+% กำไร)</option>
+                    <option value="markup_amount">คำนวณจากราคาทุน (+บาท กำไร)</option>
+                </select>
+            </div>
+            <div class="form-group"><label>ค่าเป้าหมาย</label><input id="bulk-value" type="number" step="0.01" placeholder="เช่น 10 (หมายถึง +10% หรือ +10 บาท)" class="input"></div>
+            <div class="form-group" style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="bulk-apply-cost" style="width:18px;height:18px">
+                <label for="bulk-apply-cost" style="margin:0;font-size:13px">คำนวณจากราคาทุน (แทนราคาขายปัจจุบัน)</label>
+            </div>
+            <div style="padding:12px;background:var(--amber-light);border:1px solid #FDE68A;border-radius:var(--radius-md);font-size:12px;color:#92400E;line-height:1.6">
+                <strong>⚠️ ข้อควรระวัง:</strong><br>
+                การปรับราคายกชุดจะเปลี่ยนราคาขายของสินค้าทั้งหมดในหมวดหมู่ที่เลือก<br>
+                กรุณาตรวจสอบข้อมูลให้แน่ใจก่อนกดปุ่ม "ปรับราคา"
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn-outline" onclick="closeModal('modal-bulk-price')">ยกเลิก</button>
+            <button class="btn-primary" onclick="applyBulkPrice()"><i class="fa-solid fa-check"></i> ปรับราคา</button>
         </div>
     </div>
 </div>

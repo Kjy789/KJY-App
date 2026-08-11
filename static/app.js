@@ -1044,11 +1044,16 @@ async function submitAdd(event) {
             } catch (e) { console.warn('Location image upload failed:', e); }
         }
 
+        var frontStock = document.getElementById('a-front-stock') ? document.getElementById('a-front-stock').value : stock;
+        var warehouseStock = document.getElementById('a-warehouse-stock') ? document.getElementById('a-warehouse-stock').value : '0';
+
         var formData = new FormData();
         formData.append('name', name);
         formData.append('category', category);
         formData.append('sku', sku);
         formData.append('stock_qty', stock);
+        formData.append('front_stock', frontStock);
+        formData.append('warehouse_stock', warehouseStock);
         formData.append('min_stock', minStock);
         formData.append('location_code', location);
         formData.append('location', locationText);
@@ -1528,6 +1533,14 @@ function openEditProduct(productId) {
             document.getElementById('e-desc').value = p.description || '';
             document.getElementById('edit-title').textContent = '- ' + (p.name || '');
 
+            // Populate front/warehouse stock fields (if available)
+            var eFrontStock = document.getElementById('e-front-stock');
+            if (eFrontStock) eFrontStock.value = p.front_stock !== undefined ? p.front_stock : (p.stock_qty || 0);
+            var eWarehouseStock = document.getElementById('e-warehouse-stock');
+            if (eWarehouseStock) eWarehouseStock.value = p.warehouse_stock !== undefined ? p.warehouse_stock : 0;
+            var eCost = document.getElementById('e-cost');
+            if (eCost) eCost.value = p.cost_price !== undefined ? p.cost_price : (p.latest_cost || '');
+
             // Store existing image URLs for fallback when saving
             editExistingImageUrl = p.image_path || p.image_url || '';
             editExistingLocImageUrl = p.location_image_path || p.location_image_url || '';
@@ -1637,6 +1650,9 @@ async function submitEdit(event) {
     var loc = document.getElementById('e-loc').value.trim();
     var location = document.getElementById('e-location').value.trim();
     var desc = document.getElementById('e-desc').value.trim();
+    var frontStock = document.getElementById('e-front-stock') ? document.getElementById('e-front-stock').value : stock;
+    var warehouseStock = document.getElementById('e-warehouse-stock') ? document.getElementById('e-warehouse-stock').value : '0';
+    var cost = document.getElementById('e-cost') ? document.getElementById('e-cost').value : '';
 
     if (!name || !id) {
         showToast('กรุณากรอกชื่อสินค้า', 'error');
@@ -1687,11 +1703,17 @@ async function submitEdit(event) {
         formData.append('category', category);
         formData.append('sku', sku);
         formData.append('stock_qty', stock);
+        formData.append('front_stock', frontStock);
+        formData.append('warehouse_stock', warehouseStock);
         formData.append('min_stock', minStock);
         formData.append('location_code', loc);
         formData.append('location', location);
         formData.append('description', desc);
         formData.append('sale_price', price);
+        // Owner can update cost_price
+        if (cost !== '' && currentRole === 'owner') {
+            formData.append('cost_price', cost);
+        }
         // Always send image URLs - if no new image, send existing URL to preserve it
         formData.append('image_path', imageUrl);
         formData.append('location_image_path', locationImageUrl);
@@ -2089,6 +2111,7 @@ loadStockTable = function(keyword) {
                         priceCell +
                         '<td class="c">' + locPhotoBtn + '</td>' +
                         '<td><div class="action-btns">' +
+                        '<button class="btn-icon" onclick="transferStock(' + p.id + ',\'' + escHtml(rawName) + '\')" title="ย้ายสต็อก"><i class="fa-solid fa-right-left"></i></button>' +
                         '<button class="btn-icon" onclick="openEditProduct(' + p.id + ')" title="แก้ไข"><i class="fa-solid fa-pen"></i></button>' +
                         '<button class="btn-icon" onclick="addToCart(' + p.id + ',\'' + escHtml(rawName) + '\',' + price + ',' + stock + ',\'' + escHtml(imgSrc) + '\')" title="เพิ่มลงตะกร้า"' + (stock === 0 ? ' disabled' : '') + '>' +
                         '<i class="fa-solid fa-cart-plus"></i></button>' +
@@ -2313,6 +2336,112 @@ function handleImportFile(event) {
     var file = event.target.files[0];
     if (!file) return;
     importProductsFromFile(file);
+}
+
+// ==========================================================================
+// STOCK TRANSFER (Front <-> Warehouse)
+// ==========================================================================
+
+function transferStock(productId, productName) {
+    if (!productId) return;
+
+    var qty = prompt('ย้ายสต็อก "' + productName + '"\n\nกรอกจำนวนที่ต้องการย้าย:', '1');
+    if (qty === null) return;
+
+    qty = parseInt(qty);
+    if (isNaN(qty) || qty <= 0) {
+        showToast('กรุณากรอกจำนวนที่ถูกต้อง', 'error');
+        return;
+    }
+
+    var direction = confirm('ย้ายจากคลังหลังร้าน -> หน้าร้าน?\n\nกด OK = คลัง -> หน้าร้าน\nกด Cancel = หน้าร้าน -> คลัง') ? 'to_front' : 'to_warehouse';
+
+    fetch('/api/staff/products/' + productId + '/transfer-stock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ qty: qty, direction: direction })
+    })
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+        if (data.status === 'ok') {
+            showToast('✅ ย้ายสต็อกเรียบร้อย', 'success');
+            loadStockTable();
+            loadPOSProducts();
+        } else {
+            showToast('❌ ' + (data.detail || 'ย้ายสต็อกไม่สำเร็จ'), 'error');
+        }
+    })
+    .catch(function(err) {
+        showToast('❌ ย้ายสต็อกไม่สำเร็จ: ' + err.message, 'error');
+    });
+}
+
+// ==========================================================================
+// BULK PRICE ADJUSTER (Owner Only)
+// ==========================================================================
+
+function openBulkPriceModal() {
+    if (currentRole !== 'owner') {
+        showToast('ต้องเข้าสู่โหมด Owner เพื่อใช้ฟีเจอร์นี้', 'error');
+        return;
+    }
+    openModal('modal-bulk-price');
+}
+
+async function applyBulkPrice() {
+    if (currentRole !== 'owner') {
+        showToast('ต้องเข้าสู่โหมด Owner เพื่อใช้ฟีเจอร์นี้', 'error');
+        return;
+    }
+
+    var category = document.getElementById('bulk-category') ? document.getElementById('bulk-category').value : '';
+    var mode = document.getElementById('bulk-mode') ? document.getElementById('bulk-mode').value : 'adjust_percent';
+    var value = parseFloat(document.getElementById('bulk-value') ? document.getElementById('bulk-value').value : 0) || 0;
+    var applyToCost = document.getElementById('bulk-apply-cost') ? document.getElementById('bulk-apply-cost').checked : false;
+
+    if (value === 0) {
+        showToast('กรุณากรอกค่าเป้าหมาย', 'error');
+        return;
+    }
+
+    if (!confirm('ยืนยันปรับราคาสินค้า' + (category ? ' หมวดหมู่ "' + category + '"' : ' ทั้งหมด') + '?')) return;
+
+    var btn = event.target;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-sm"></span> กำลังปรับ...';
+
+    try {
+        var res = await fetch('/api/owner/products/bulk-price', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                mode: mode,
+                category: category,
+                value: value,
+                apply_to_cost: applyToCost
+            })
+        });
+
+        if (!res.ok) {
+            var errData = await res.json().catch(function() { return {}; });
+            throw new Error(errData.detail || 'HTTP ' + res.status);
+        }
+
+        var data = await res.json();
+        showToast('✅ ' + (data.message || 'ปรับราคาเรียบร้อย'), 'success');
+        closeModal('modal-bulk-price');
+
+        // Refresh views
+        loadStockTable();
+        loadPOSProducts();
+        if (currentRole === 'owner') loadOwnerReports();
+
+    } catch (err) {
+        showToast('❌ ปรับราคาไม่สำเร็จ: ' + err.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-check"></i> ปรับราคา';
+    }
 }
 
 // ==========================================================================

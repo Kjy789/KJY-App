@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS public.products (
     cost_price NUMERIC(12, 2) DEFAULT 0.00 NOT NULL,
     sale_price NUMERIC(12, 2) DEFAULT 0.00 NOT NULL,
     stock_qty INT DEFAULT 0 NOT NULL,
+    front_stock INT DEFAULT 0 NOT NULL,
+    warehouse_stock INT DEFAULT 0 NOT NULL,
     location_code TEXT,
     image_url TEXT,
     location_image_url TEXT,

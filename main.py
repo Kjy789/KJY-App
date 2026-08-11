@@ -340,8 +340,14 @@ async def add_product_direct(
     name: str = Form(...),
     category: str = Form(None),
     sale_price: float = Form(0),
+    cost_price: float = Form(0),
     stock_qty: int = Form(0),
+    front_stock: int = Form(0),
+    warehouse_stock: int = Form(0),
+    min_stock: int = Form(5),
     location_code: str = Form(None),
+    location: str = Form(None),
+    description: str = Form(None),
     sku: str = Form(None),
     image_path: str = Form(None),
     location_image_path: str = Form(None),
@@ -349,8 +355,9 @@ async def add_product_direct(
     location_file: UploadFile = File(None),
 ):
     """
-    Staff เพิ่มสินค้าใหม่เข้าคลัง (รวมรูปสินค้า + รูปถ่ายตำแหน่งในโกดัง)
+    เพิ่มสินค้าใหม่เข้าคลัง (รวมรูปสินค้า + รูปถ่ายตำแหน่งในโกดัง)
     รองรับทั้งอัปโหลดไฟล์ตรง (file) และส่ง URL ที่อัปโหลดแล้ว (image_path)
+    รองรับการแยกสต็อก: front_stock (หน้าร้าน) + warehouse_stock (คลังหลังร้าน)
     """
     final_image_url = image_path
     if file and file.filename:
@@ -363,12 +370,18 @@ async def add_product_direct(
     product_id = crud.add_product_staff(
         name=name,
         sale_price=sale_price,
+        cost_price=cost_price,
         category=category,
         sku=sku,
         location_code=location_code,
+        location=location or "",
+        description=description or "",
         image_path=final_image_url,
         location_image_path=final_location_image_url,
         stock_qty=stock_qty,
+        min_stock=min_stock,
+        front_stock=front_stock,
+        warehouse_stock=warehouse_stock,
     )
     return {"status": "ok", "product_id": product_id, "name": name}
 
@@ -379,22 +392,42 @@ async def update_product_staff_route(
     name: str = Form(None),
     category: str = Form(None),
     sale_price: float = Form(None),
+    cost_price: float = Form(None),
     stock_qty: int = Form(None),
+    front_stock: int = Form(None),
+    warehouse_stock: int = Form(None),
+    min_stock: int = Form(None),
     location_code: str = Form(None),
+    location: str = Form(None),
+    description: str = Form(None),
     sku: str = Form(None),
     image_path: str = Form(None),
     location_image_path: str = Form(None),
     file: UploadFile = File(None),
     location_file: UploadFile = File(None),
 ):
-    """Staff แก้ไขข้อมูลสินค้า (ไม่อนุญาตให้แก้ไขต้นทุน)"""
+    """
+    แก้ไขข้อมูลสินค้า
+    - Staff: ไม่อนุญาตให้แก้ไข cost_price (ถูกกรองใน crud.update_product_staff)
+    - Owner: ส่ง cost_price ได้ (ผ่าน allow_cost_price=True)
+    """
     update_data = {}
     if name is not None: update_data["name"] = name
     if category is not None: update_data["category"] = category
     if sale_price is not None: update_data["sale_price"] = sale_price
     if stock_qty is not None: update_data["stock_qty"] = stock_qty
+    if front_stock is not None: update_data["front_stock"] = front_stock
+    if warehouse_stock is not None: update_data["warehouse_stock"] = warehouse_stock
+    if min_stock is not None: update_data["min_stock"] = min_stock
     if location_code is not None: update_data["location_code"] = location_code
+    if location is not None: update_data["location"] = location
+    if description is not None: update_data["description"] = description
     if sku is not None: update_data["sku"] = sku
+
+    # Owner can update cost_price (frontend sends allow_cost_price=true when in owner mode)
+    if cost_price is not None:
+        update_data["cost_price"] = cost_price
+        update_data["allow_cost_price"] = True
 
     # Accept pre-uploaded image URL
     if image_path is not None:
@@ -410,6 +443,27 @@ async def update_product_staff_route(
 
     crud.update_product_staff(product_id, **update_data)
     return {"status": "ok", "message": "อัปเดตเรียบร้อย"}
+
+
+@app.post("/api/staff/products/{product_id}/transfer-stock")
+def transfer_stock_route(product_id: int, payload: dict):
+    """
+    ย้ายสต็อกระหว่างหน้าร้าน (front_stock) กับคลังหลังร้าน (warehouse_stock)
+    payload: {"qty": 5, "direction": "to_front" | "to_warehouse"}
+    """
+    qty = int(payload.get("qty", 0) or 0)
+    direction = payload.get("direction", "to_front")
+
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="กรุณาระบุจำนวนที่มากกว่า 0")
+
+    try:
+        result = crud.transfer_stock(product_id, qty, direction)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ย้ายสต็อกไม่สำเร็จ: {str(e)}")
 
 
 @app.get("/api/staff/pending-products")

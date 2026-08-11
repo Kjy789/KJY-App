@@ -27,6 +27,11 @@ SUPABASE_MIGRATED_COLUMNS = {
     "description", "min_stock", "location"
 }
 
+# คอลัมน์ที่เพิ่มจาก Migration 003 (front_stock / warehouse_stock)
+SUPABASE_STOCK_COLUMNS = {
+    "front_stock", "warehouse_stock"
+}
+
 def _sanitize_supabase_payload(payload: dict, allowed_columns: set = None) -> dict:
     """
     กรอง payload ให้มีเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase
@@ -245,10 +250,28 @@ def get_product_staff(product_id: int):
         return None
 
 
-def add_product_staff(name, sale_price=0, category=None, sku=None,
+def add_product_staff(name, sale_price=0, cost_price=0, category=None, sku=None,
                       location_code=None, location="", description="",
-                      image_path=None, location_image_path=None, stock_qty=0, min_stock=5):
-    """Staff เพิ่มสินค้าใหม่เข้าคลัง (สินค้ามีสถานะ active ทันที)"""
+                      image_path=None, location_image_path=None, stock_qty=0, min_stock=5,
+                      front_stock=0, warehouse_stock=0):
+    """
+    Staff เพิ่มสินค้าใหม่เข้าคลัง (สินค้ามีสถานะ active ทันที)
+    รองรับการแยกสต็อก:
+    - front_stock = สต็อกหน้าร้าน
+    - warehouse_stock = สต็อกคลังหลังร้าน
+    - stock_qty = front_stock + warehouse_stock (คำนวณอัตโนมัติ)
+    """
+    # ถ้าไม่ได้ระบุ front/warehouse แยก ให้ใช้ stock_qty ทั้งหมดไปที่ front_stock
+    if front_stock == 0 and warehouse_stock == 0:
+        front_stock = int(stock_qty or 0)
+        warehouse_stock = 0
+    else:
+        front_stock = int(front_stock or 0)
+        warehouse_stock = int(warehouse_stock or 0)
+
+    # stock_qty = ผลรวม (เผื่อ database ไม่มี trigger)
+    total_stock = front_stock + warehouse_stock
+
     if supabase_admin:
         try:
             payload = {
@@ -261,13 +284,26 @@ def add_product_staff(name, sale_price=0, category=None, sku=None,
                 "description": description or "",
                 "image_url": image_path,
                 "location_image_url": location_image_path,
-                "stock_qty": int(stock_qty or 0),
+                "stock_qty": total_stock,
                 "min_stock": int(min_stock or 5),
                 "status": "active"
             }
+            # รวม front_stock / warehouse_stock ถ้ามีคอลัมน์ใน Supabase (Migration 003)
+            if supabase_admin:
+                try:
+                    # ตรวจสอบว่าคอลัมน์ front_stock มีจริงไหม โดยลอง query
+                    test = supabase_admin.from_("products").select("front_stock").limit(1).execute()
+                    payload["front_stock"] = front_stock
+                    payload["warehouse_stock"] = warehouse_stock
+                except Exception:
+                    # คอลัมน์ยังไม่มีบน Supabase — ใช้ stock_qty อย่างเดียว
+                    pass
+
             # กรองเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase
             # ป้องกัน request พังถ้ายังไม่ได้รัน migration
             safe_payload = _sanitize_supabase_payload(payload)
+            # เพิ่มคอลัมน์ stock ใหม่ถ้าอยู่ใน payload
+            safe_payload = {k: v for k, v in payload.items() if k in (SUPABASE_PRODUCT_COLUMNS | SUPABASE_STOCK_COLUMNS)}
             logger.info(f"[SUPABASE] Inserting product payload: {safe_payload}")
             res = supabase_admin.from_("products").insert(safe_payload).execute()
             if res.data:
@@ -289,9 +325,19 @@ def add_product_staff(name, sale_price=0, category=None, sku=None,
         cur = conn.execute(
             """INSERT INTO products (sku, name, category, sale_price, location_code, location, description, image_path, location_image_path, stock_qty, min_stock, status)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
-            (sku, name, category, sale_price, location_code, location, description, image_path, location_image_path, stock_qty, min_stock),
+            (sku, name, category, sale_price, location_code, location, description, image_path, location_image_path, total_stock, min_stock),
         )
         pid = cur.lastrowid
+
+        # อัปเดต front_stock / warehouse_stock แยก (ถ้าตาราง SQLite มีคอลัมน์)
+        try:
+            conn.execute(
+                "UPDATE products SET front_stock = ?, warehouse_stock = ? WHERE id = ?",
+                (front_stock, warehouse_stock, pid)
+            )
+        except Exception:
+            pass
+
         add_audit_log("เพิ่มสินค้า", f"เพิ่มสินค้า '{name}' (SKU: {sku})", "staff")
 
         if location_code and location_image_path:
@@ -304,9 +350,32 @@ def add_product_staff(name, sale_price=0, category=None, sku=None,
 
 
 def update_product_staff(product_id: int, **fields):
-    """Staff แก้ไขข้อมูลสินค้า (ไม่อนุญาตให้แก้ไขต้นทุน)"""
-    allowed_keys = {"name", "category", "sku", "sale_price", "stock_qty", "location_code", "location", "description", "min_stock", "image_path", "location_image_path"}
+    """
+    แก้ไขข้อมูลสินค้า
+    - Staff: ไม่อนุญาตให้แก้ไข cost_price
+    - Owner: แก้ไข cost_price ได้ (ผ่าน allow_cost_price=True)
+    """
+    # ถ้าไม่มีการส่ง allow_cost_price=True จะกรอง cost_price ออก
+    allow_cost_price = fields.pop("allow_cost_price", False)
+
+    allowed_keys = {
+        "name", "category", "sku", "sale_price", "stock_qty", "cost_price",
+        "location_code", "location", "description", "min_stock",
+        "image_path", "location_image_path",
+        "front_stock", "warehouse_stock"
+    }
     filtered_fields = {k: v for k, v in fields.items() if k in allowed_keys and v is not None}
+
+    # Staff ไม่มีสิทธิ์แก้ไขต้นทุน (กรอง cost_price ออก)
+    if not allow_cost_price:
+        filtered_fields.pop("cost_price", None)
+
+    # คำนวณ stock_qty ใหม่ถ้ามีการส่ง front_stock / warehouse_stock
+    if "front_stock" in filtered_fields or "warehouse_stock" in filtered_fields:
+        f_stock = int(filtered_fields.get("front_stock", 0) or 0)
+        w_stock = int(filtered_fields.get("warehouse_stock", 0) or 0)
+        filtered_fields["stock_qty"] = f_stock + w_stock
+
     if not filtered_fields:
         return
 
@@ -320,9 +389,8 @@ def update_product_staff(product_id: int, **fields):
                     sp_payload["location_image_url"] = v
                 else:
                     sp_payload[k] = v
-            # กรองเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase
-            # ป้องกัน request พังถ้ายังไม่ได้รัน migration
-            safe_payload = _sanitize_supabase_payload(sp_payload)
+            # กรองเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase (รวม stock columns จาก Migration 003)
+            safe_payload = {k: v for k, v in sp_payload.items() if k in (SUPABASE_PRODUCT_COLUMNS | SUPABASE_STOCK_COLUMNS)}
             logger.info(f"[SUPABASE] Updating product id={product_id} payload: {safe_payload}")
             res = supabase_admin.from_("products").update(safe_payload).eq("id", product_id).execute()
             logger.info(f"[SUPABASE] Update success for id={product_id}, response data: {res.data}")
@@ -342,6 +410,101 @@ def update_product_staff(product_id: int, **fields):
     with db_session() as conn:
         conn.execute(f"UPDATE products SET {set_clause} WHERE id = ?", values)
         add_audit_log("แก้ไขสินค้า", f"แก้ไขสินค้า id={product_id}: {', '.join(filtered_fields.keys())}", "staff")
+
+
+def transfer_stock(product_id: int, qty: int, direction: str = "to_front"):
+    """
+    ย้ายสต็อกระหว่างหน้าร้าน (front_stock) กับคลังหลังร้าน (warehouse_stock)
+    - direction="to_front": ย้ายจากคลังหลังร้าน -> หน้าร้าน
+    - direction="to_warehouse": ย้ายจากหน้าร้าน -> คลังหลังร้าน
+    """
+    if not product_id or qty <= 0:
+        raise ValueError("กรุณาระบุสินค้าและจำนวนที่ถูกต้อง")
+
+    if supabase_admin:
+        try:
+            # ดึงข้อมูลสต็อกปัจจุบัน
+            p = supabase_admin.from_("products").select("front_stock, warehouse_stock, name").eq("id", product_id).single().execute()
+            if not p.data:
+                raise ValueError(f"ไม่พบสินค้า id={product_id}")
+
+            current_front = int(p.data.get("front_stock", 0) or 0)
+            current_warehouse = int(p.data.get("warehouse_stock", 0) or 0)
+            name = p.data.get("name", f"id={product_id}")
+
+            if direction == "to_front":
+                # คลัง -> หน้าร้าน
+                if qty > current_warehouse:
+                    raise ValueError(f"สต็อกคลังหลังร้านไม่พอ (มี {current_warehouse} ชิ้น)")
+                new_front = current_front + qty
+                new_warehouse = current_warehouse - qty
+            else:
+                # หน้าร้าน -> คลัง
+                if qty > current_front:
+                    raise ValueError(f"สต็อกหน้าร้านไม่พอ (มี {current_front} ชิ้น)")
+                new_front = current_front - qty
+                new_warehouse = current_warehouse + qty
+
+            # อัปเดต Supabase
+            supabase_admin.from_("products").update({
+                "front_stock": new_front,
+                "warehouse_stock": new_warehouse,
+                "stock_qty": new_front + new_warehouse
+            }).eq("id", product_id).execute()
+
+            add_audit_log("ย้ายสต็อก", f"ย้ายสต็อก '{name}' จำนวน {qty} ชิ้น ({'คลัง->หน้าร้าน' if direction=='to_front' else 'หน้าร้าน->คลัง'})", "staff")
+            return {"status": "ok", "front_stock": new_front, "warehouse_stock": new_warehouse}
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"[SUPABASE] Transfer stock FAILED for id={product_id}: {e}")
+            # Fall through to SQLite
+
+    with db_session() as conn:
+        p = conn.execute(
+            "SELECT front_stock, warehouse_stock, name FROM products WHERE id = ?",
+            (product_id,)
+        ).fetchone()
+        if not p:
+            raise ValueError(f"ไม่พบสินค้า id={product_id}")
+
+        current_front = int(p["front_stock"] or 0) if p["front_stock"] is not None else int(p["stock_qty"] or 0)
+        current_warehouse = int(p["warehouse_stock"] or 0) if p["warehouse_stock"] is not None else 0
+        name = p["name"]
+
+        if direction == "to_front":
+            if qty > current_warehouse:
+                raise ValueError(f"สต็อกคลังหลังร้านไม่พอ (มี {current_warehouse} ชิ้น)")
+            new_front = current_front + qty
+            new_warehouse = current_warehouse - qty
+        else:
+            if qty > current_front:
+                raise ValueError(f"สต็อกหน้าร้านไม่พอ (มี {current_front} ชิ้น)")
+            new_front = current_front - qty
+            new_warehouse = current_warehouse + qty
+
+        try:
+            conn.execute(
+                """UPDATE products
+                   SET front_stock = ?, warehouse_stock = ?, stock_qty = ?,
+                       updated_at = datetime('now', 'localtime')
+                   WHERE id = ?""",
+                (new_front, new_warehouse, new_front + new_warehouse, product_id)
+            )
+        except Exception:
+            # SQLite ยังไม่มีคอลัมน์ front_stock/warehouse_stock
+            conn.execute(
+                """UPDATE products
+                   SET stock_qty = MAX(0, stock_qty + ?),
+                       updated_at = datetime('now', 'localtime')
+                   WHERE id = ?""",
+                (qty if direction == "to_front" else -qty, product_id)
+            )
+            new_front = None
+            new_warehouse = None
+
+        add_audit_log("ย้ายสต็อก", f"ย้ายสต็อก '{name}' จำนวน {qty} ชิ้น ({'คลัง->หน้าร้าน' if direction=='to_front' else 'หน้าร้าน->คลัง'})", "staff")
+        return {"status": "ok", "front_stock": new_front, "warehouse_stock": new_warehouse}
 
 
 def delete_product_staff(product_id: int):
