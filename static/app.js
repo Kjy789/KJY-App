@@ -1103,12 +1103,12 @@ async function submitAdd(event) {
         closeModal('modal-add');
         showToast('✅ เพิ่มสินค้า "' + name + '" เรียบร้อยแล้ว', 'success');
 
-        // Auto reload products in current view
-        if (currentView === 'stock') loadStockTable();
-        else if (currentView === 'pos') {
-            var kw = document.getElementById('pos-search') ? document.getElementById('pos-search').value.trim() : '';
-            loadPOSProducts(kw, currentCategory);
-        }
+        // === Refresh BOTH views (Stock + POS) ALWAYS ===
+        // 1. Refresh Stock Table
+        loadStockTable();
+        // 2. Refresh POS Product Grid
+        var kw = document.getElementById('pos-search') ? document.getElementById('pos-search').value.trim() : '';
+        loadPOSProducts(kw, currentCategory);
 
     } catch (err) {
         showToast(err.message, 'error');
@@ -1737,11 +1737,12 @@ async function submitEdit(event) {
         editLocImageFile = null;
         editLocImageBase64 = null;
 
-        if (currentView === 'stock') loadStockTable();
-        else if (currentView === 'pos') {
-            var kw = document.getElementById('pos-search') ? document.getElementById('pos-search').value.trim() : '';
-            loadPOSProducts(kw, currentCategory);
-        }
+        // === Refresh BOTH views (Stock + POS) ALWAYS ===
+        // 1. Refresh Stock Table
+        loadStockTable();
+        // 2. Refresh POS Product Grid
+        var kw = document.getElementById('pos-search') ? document.getElementById('pos-search').value.trim() : '';
+        loadPOSProducts(kw, currentCategory);
 
     } catch (err) {
         showToast(err.message, 'error');
