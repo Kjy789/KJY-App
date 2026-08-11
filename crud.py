@@ -154,6 +154,9 @@ def list_products_staff(keyword=None, location_code=None, category=None):
                     item["location"] = ""
                 products.append(item)
             logger.info(f"[SUPABASE] list_products_staff: found {len(products)} products (cost data stripped)")
+            # Supabase is the source of truth. Do not mix local seeded/demo data
+            # into the live catalogue when the cloud query succeeds.
+            return products
         except Exception as e:
             import traceback
             logger.error(f"[SUPABASE] list_products_staff query FAILED: {e}")

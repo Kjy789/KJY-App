@@ -258,8 +258,8 @@ def get_staff_products(
     """
     try:
         result = crud.list_products_staff(keyword=keyword, location_code=location_code, category=category)
-        if result and len(result) > 0:
-            return result
+        # An empty list is a valid live catalogue; do not replace it with demo products.
+        return result
     except Exception as e:
         print(f"DB error, falling back to mock: {e}")
 
@@ -509,8 +509,8 @@ def get_owner_products(
     """รายการสินค้าฉบับเต็มสำหรับ Owner (มีราคาต้นทุน + กำไร)"""
     try:
         result = crud.list_products_owner(keyword=keyword, location_code=location_code, category=category)
-        if result and len(result) > 0:
-            return result
+        # An empty list is valid. Mock data must never appear in the live owner report.
+        return result
     except Exception as e:
         print(f"DB error, falling back to mock owner products: {e}")
 
