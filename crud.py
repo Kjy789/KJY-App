@@ -125,7 +125,7 @@ def list_products_staff(keyword=None, location_code=None, category=None):
     # 1. ดึงจาก Supabase (ถ้าพร้อมใช้งาน)
     if supabase_admin:
         try:
-            query = supabase_admin.from_(products).select("*").eq("status", "active")
+            query = supabase_admin.from_("products").select("*").eq("status", "active")
             if keyword:
                 kw_parts = keyword.strip().split()
                 for kw in kw_parts:
@@ -217,7 +217,7 @@ def get_product_staff(product_id: int):
     """ดึงข้อมูลสินค้าชิ้นเดียวสำหรับ Staff (ไม่มีราคาต้นทุน)"""
     if supabase_admin:
         try:
-            res = supabase_admin.from_(products).select("*").eq("id", product_id).execute()
+            res = supabase_admin.from_("products").select("*").eq("id", product_id).execute()
             if res.data:
                 p = res.data[0]
                 # STRIP COST DATA for staff view - security rule
