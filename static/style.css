@@ -40,7 +40,8 @@
     --shadow-lg: 0 10px 40px rgba(0,0,0,0.1);
     --shadow-xl: 0 20px 60px rgba(0,0,0,0.15);
 
-    --sidebar-w: 190px;
+    --sidebar-w: 72px;
+    --sidebar-expanded-w: 164px;
     --cart-w: 380px;
     --bottom-h: 64px;
     --radius-sm: 8px;
@@ -257,6 +258,11 @@ body {
     height: 100vh;
     overflow: hidden;
     max-width: 100vw;
+    transition: grid-template-columns 0.22s ease;
+}
+
+.app-layout:has(.sidebar:hover) {
+    grid-template-columns: var(--sidebar-expanded-w) 1fr var(--cart-w);
 }
 
 /* ============================================================
@@ -267,8 +273,8 @@ body {
     background: var(--sidebar-bg);
     display: flex;
     flex-direction: column;
-    align-items: stretch;
-    padding: 16px 12px 20px;
+    align-items: center;
+    padding: 14px 8px 20px;
     gap: 0;
     height: 100vh;
     overflow: hidden;
@@ -279,7 +285,7 @@ body {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 4px;
+    gap: 7px;
     margin-bottom: 16px;
     padding-bottom: 12px;
     border-bottom: 1px solid rgba(255,255,255,0.08);
@@ -288,18 +294,22 @@ body {
 }
 
 .sb-icon {
-    width: 100%;
-    height: 72px;
+    width: 52px;
+    height: 52px;
     display: flex;
     align-items: center;
     justify-content: center;
+    overflow: hidden;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
 }
 
 .brand-logo {
     width: 100%;
     height: 100%;
     object-fit: contain;
-    border-radius: var(--radius-sm);
+    border-radius: 50%;
     background: #fff;
     padding: 3px;
 }
@@ -312,19 +322,21 @@ body {
     color: #94A3B8;
     text-transform: uppercase;
     margin-top: 2px;
+    display: none;
+    white-space: nowrap;
 }
 
 .sidebar-role {
     width: 100%;
     display: flex;
-    justify-content: stretch;
+    justify-content: center;
     margin-bottom: 10px;
     padding-bottom: 10px;
     border-bottom: 1px solid rgba(255,255,255,0.08);
 }
 
 .role-switch {
-    width: 100%; height: 48px;
+    width: 48px; height: 48px;
     border-radius: var(--radius-md);
     background: rgba(255,255,255,0.06);
     border: 1px solid rgba(255,255,255,0.1);
@@ -333,15 +345,15 @@ body {
     display: flex;
     flex-direction: row;
     align-items: center;
-    justify-content: flex-start;
-    padding: 0 14px;
-    gap: 10px;
+    justify-content: center;
+    padding: 0;
+    gap: 0;
     transition: var(--tr);
     font-family: inherit;
 }
 
 .role-switch i { font-size: 17px; }
-.role-switch span { font-size: 13px; font-weight: 700; }
+.role-switch span { display: none; font-size: 13px; font-weight: 700; }
 .role-switch:hover { background: rgba(255,255,255,0.1); color: white; }
 .role-switch.owner { background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.3); color: #FCA5A5; }
 
@@ -349,14 +361,14 @@ body {
     flex: 1;
     display: flex;
     flex-direction: column;
-    align-items: stretch;
+    align-items: center;
     gap: 4px;
     width: 100%;
     overflow-y: auto;
 }
 
 .nav-item {
-    width: 100%; height: 50px;
+    width: 48px; height: 50px;
     border-radius: var(--radius-md);
     background: transparent;
     border: 1px solid transparent;
@@ -365,18 +377,28 @@ body {
     display: flex;
     flex-direction: row;
     align-items: center;
-    justify-content: flex-start;
-    padding: 0 14px;
-    gap: 12px;
+    justify-content: center;
+    padding: 0;
+    gap: 0;
     transition: var(--tr);
     font-family: inherit;
     flex-shrink: 0;
 }
 
 .nav-item i { font-size: 18px; line-height: 1; width: 20px; text-align: center; }
-.nav-item span { font-size: 14px; font-weight: 700; line-height: 1; }
+.nav-item span { display: none; font-size: 14px; font-weight: 700; line-height: 1; }
 .nav-item:hover { background: rgba(255,255,255,0.06); color: #E2E8F0; }
 .nav-item.active { background: var(--sidebar-active-bg); color: var(--sidebar-active); border-color: rgba(59,130,246,0.25); }
+
+/* Expand the compact sidebar only while the pointer is over it. */
+.sidebar:hover { align-items: stretch; padding-left: 10px; padding-right: 10px; }
+.sidebar:hover .sb-label { display: block; }
+.sidebar:hover .sidebar-role { justify-content: stretch; }
+.sidebar:hover .role-switch { width: 100%; justify-content: flex-start; padding: 0 13px; gap: 10px; }
+.sidebar:hover .role-switch span { display: inline; }
+.sidebar:hover .sidebar-nav { align-items: stretch; }
+.sidebar:hover .nav-item { width: 100%; justify-content: flex-start; padding: 0 13px; gap: 12px; }
+.sidebar:hover .nav-item span { display: inline; }
 
 /* ============================================================
    MAIN CONTENT
