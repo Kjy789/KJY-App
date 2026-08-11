@@ -78,8 +78,9 @@ body {
 
 .sales-fab {
     position: fixed;
-    right: 24px;
-    bottom: 88px;
+    left: calc(var(--sidebar-expanded-w) + 18px);
+    right: auto;
+    bottom: 24px;
     width: 56px;
     height: 56px;
     border-radius: 50%;
@@ -102,8 +103,9 @@ body {
 
 .sales-assistant-widget {
     position: fixed;
-    right: 24px;
-    bottom: 152px;
+    left: calc(var(--sidebar-expanded-w) + 18px);
+    right: auto;
+    bottom: 92px;
     width: 360px;
     max-height: 520px;
     background: var(--card);
@@ -1861,6 +1863,8 @@ body {
     .row-3 { grid-template-columns: 1fr 1fr; }
     .presets { grid-template-columns: repeat(3, 1fr); }
     .toast { bottom: calc(var(--bottom-h) + 12px); }
+    .sales-fab { left: 14px; bottom: 88px; }
+    .sales-assistant-widget { left: 14px; bottom: 152px; width: min(360px, calc(100vw - 28px)); }
 }
 
 @media (max-width: 480px) {
