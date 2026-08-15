@@ -334,7 +334,12 @@
                     <div class="form-group"><label>สต็อกรวม</label><input id="a-qty" type="number" min="0" value="1" class="input" readonly title="คำนวณอัตโนมัติ = หน้าร้าน + คลัง"></div>
                 </div>
                 <div class="row-2">
-                    <div class="form-group"><label>ตำแหน่งจัดเก็บ</label><input id="a-location" placeholder="เช่น ชั้น A ตู้ 1" class="input"></div>
+                    <div class="form-group"><label>ตำแหน่งจัดเก็บ</label>
+                        <div class="loc-input-row">
+                            <input id="a-location" placeholder="เช่น ชั้น A ตู้ 1" class="input" list="loc-list" onclick="loadLocationOptions('a-location')">
+                            <button type="button" class="btn-outline" onclick="addNewLocation()" title="เพิ่มตำแหน่งใหม่"><i class="fa-solid fa-plus"></i></button>
+                        </div>
+                    </div>
                     <div class="form-group"><label>รหัสตำแหน่ง (Location Code)</label><input id="a-loc" placeholder="A-01-05" class="input"></div>
                 </div>
                 <div class="form-group"><label>รายละเอียด / สเปกสินค้า</label>
@@ -419,7 +424,12 @@
                 </div>
                 <div class="row-2">
                     <div class="form-group"><label>รหัสตำแหน่ง</label><input id="e-loc" placeholder="A-01-05" class="input"></div>
-                    <div class="form-group"><label>ตำแหน่งจัดเก็บ (ข้อความ)</label><input id="e-location" placeholder="วางใกล้กับ... ชั้น..." class="input"></div>
+                    <div class="form-group"><label>ตำแหน่งจัดเก็บ (ข้อความ)</label>
+                        <div class="loc-input-row">
+                            <input id="e-location" placeholder="วางใกล้กับ... ชั้น..." class="input" list="loc-list" onclick="loadLocationOptions('e-location')">
+                            <button type="button" class="btn-outline" onclick="addNewLocation()" title="เพิ่มตำแหน่งใหม่"><i class="fa-solid fa-plus"></i></button>
+                        </div>
+                    </div>
                 </div>
                 <div class="form-group"><label>รายละเอียด / สเปก</label>
                     <div class="desc-row"><textarea id="e-desc" class="input" rows="2" placeholder="สเปกสินค้า..."></textarea><button type="button" class="btn-ai-spec" onclick="generateSpec('edit')" title="AI สรุปสเปก">✨ AI</button></div>
@@ -587,5 +597,5 @@
 </div>
 
 <script src="/static/app.js"></script>
-</body>
+<datalist id="loc-list"></datalist>\n</body>
 </html>

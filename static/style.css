@@ -1889,3 +1889,142 @@ body {
     :root { --cart-w: 420px; }
     .product-grid { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
 }
+
+/* ============================================================
+   RESPONSIVE UI FIXES - iPad & Mobile
+   - Unlock fixed widths, use flex/grid + relative units
+   - Enable smooth touch scrolling
+   ============================================================ */
+html, body {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    touch-action: manipulation;
+}
+
+* {
+    -webkit-tap-highlight-color: transparent;
+    box-sizing: border-box;
+}
+
+.app-layout {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr) 340px;
+    min-height: 100vh;
+    width: 100%;
+    max-width: 100%;
+}
+
+.main {
+    width: 100%;
+    min-width: 0;
+    overflow-x: hidden;
+}
+
+/* Fix fixed-width elements */
+.sidebar { width: 72px; flex-shrink: 0; }
+.cart-panel { width: 340px; flex-shrink: 0; }
+.cart-panel, .sidebar { max-width: 40vw; }
+
+/* Smooth scrolling containers */
+.table-scroll, .grid-wrap, .cart-items, .assistant-chat, .pos-bar {
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
+}
+
+/* Buttons - instant tap response, no double-tap zoom delay */
+button, .btn-primary, .btn-outline, .btn-green, .btn-danger, .btn-icon,
+.chip, .pre, .p-tab, .qty-btn, .add-card-btn {
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+/* Inputs on mobile */
+input, select, textarea {
+    font-size: 16px; /* prevent iOS zoom on focus */
+}
+
+/* ============ SALES ASSISTANT - Left-Center + Draggable ============ */
+.sales-fab {
+    position: fixed;
+    left: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 999;
+}
+.sales-assistant-widget {
+    position: fixed;
+    left: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 320px;
+    max-width: 85vw;
+    z-index: 1000;
+    cursor: grab;
+}
+.sales-assistant-widget.dragging { cursor: grabbing; opacity: 0.85; }
+.sales-assistant-widget .assistant-header {
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ============ Location Datalist input row ============ */
+.loc-input-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+.loc-input-row .input { flex: 1; min-width: 0; }
+
+/* ============ iPad specific breakpoints ============ */
+@media (max-width: 1024px) {
+    .app-layout {
+        grid-template-columns: 64px minmax(0, 1fr) 300px;
+    }
+    .cart-panel { width: 300px; }
+}
+
+@media (max-width: 768px) {
+    .app-layout {
+        display: block;
+    }
+    .sidebar { display: none; }
+    .cart-panel { display: none; }
+    .main {
+        padding-bottom: 72px;
+        width: 100%;
+    }
+    .sales-fab {
+        left: 12px;
+        top: 50%;
+    }
+    .sales-assistant-widget {
+        left: 12px;
+        width: min(85vw, 320px);
+    }
+}
+
+/* Fix grid on small screens */
+.product-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(160px, 100%), 1fr));
+    gap: 12px;
+    width: 100%;
+}
+
+/* Table cards scroll horizontally on mobile without breaking layout */
+.table-card {
+    max-width: 100%;
+    overflow: hidden;
+}
+.table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+.data-table {
+    min-width: 620px;
+    width: 100%;
+}

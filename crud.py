@@ -398,8 +398,9 @@ def update_product_staff(product_id: int, **fields):
                     sp_payload["location_image_url"] = v
                 else:
                     sp_payload[k] = v
-            # กรองเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase (รวม stock columns จาก Migration 003)
-            safe_payload = {k: v for k, v in sp_payload.items() if k in (SUPABASE_PRODUCT_COLUMNS | SUPABASE_STOCK_COLUMNS)}
+            # กรองเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase (รวม migration 002 + 003)
+            allowed_cols = SUPABASE_PRODUCT_COLUMNS | SUPABASE_MIGRATED_COLUMNS | SUPABASE_STOCK_COLUMNS
+            safe_payload = {k: v for k, v in sp_payload.items() if k in allowed_cols}
             logger.info(f"[SUPABASE] Updating product id={product_id} payload: {safe_payload}")
             res = supabase_admin.from_("products").update(safe_payload).eq("id", product_id).execute()
             logger.info(f"[SUPABASE] Update success for id={product_id}, response data: {res.data}")

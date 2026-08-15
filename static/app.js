@@ -1958,7 +1958,7 @@ async function loadAuditLogs() {
 async function generateSpec(mode) {
     var nameField = mode === 'add' ? document.getElementById('a-name') : document.getElementById('e-name');
     var catField = mode === 'add' ? document.getElementById('a-cat') : document.getElementById('e-cat');
-    var descField = mode === 'add' ? null : document.getElementById('e-desc');
+    var descField = mode === 'add' ? document.getElementById('a-desc') : document.getElementById('e-desc');
 
     if (!nameField || !nameField.value.trim()) {
         showToast('กรุณากรอกชื่อสินค้าก่อน', 'error');
@@ -1974,16 +1974,18 @@ async function generateSpec(mode) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: nameField.value.trim(), category: catField ? catField.value.trim() : '' })
         });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         var data = await res.json();
 
         if (descField && data.spec) {
             descField.value = data.spec;
             showToast('✨ AI สรุปสเปกสินค้าเรียบร้อย', 'success');
         } else if (data.spec) {
-            showToast('✨ AI: ' + data.spec.substring(0, 50) + '...', 'success');
+            showToast('✨ AI: ' + data.spec.substring(0, 60) + '...', 'success');
         }
     } catch (err) {
-        showToast('AI สรุปสเปกไม่สำเร็จ', 'error');
+        console.error('AI spec failed:', err);
+        showToast('AI สรุปสเปกไม่สำเร็จ: ' + err.message, 'error');
     } finally {
         if (btn) { btn.disabled = false; btn.textContent = '✨ AI'; }
     }
@@ -2495,3 +2497,114 @@ loadOwnerReports = function(keyword) {
         })
         .catch(function() {});
 };
+
+
+// ==========================================================================
+// SALES ASSISTANT DRAG & DROP (Touch + Mouse)
+// ==========================================================================
+
+(function() {
+    var widget = document.getElementById('sales-assistant-widget');
+    if (!widget) return;
+
+    var isDragging = false;
+    var startX = 0, startY = 0;
+    var origLeft = 0, origTop = 0;
+
+    widget.addEventListener('pointerdown', function(e) {
+        // Only start drag when clicking on header (not input/button/send)
+        if (e.target.closest('.assistant-input') || e.target.closest('.assistant-send') || e.target.closest('.assistant-close')) return;
+        isDragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        origLeft = widget.offsetLeft;
+        origTop = widget.offsetTop;
+        widget.classList.add('dragging');
+        widget.setPointerCapture(e.pointerId);
+        e.preventDefault();
+    });
+
+    widget.addEventListener('pointermove', function(e) {
+        if (!isDragging) return;
+        var dx = e.clientX - startX;
+        var dy = e.clientY - startY;
+        var newLeft = origLeft + dx;
+        var newTop = origTop + dy;
+
+        // Clamp to viewport
+        var vw = window.innerWidth;
+        var vh = window.innerHeight;
+        var w = widget.offsetWidth;
+        var h = widget.offsetHeight;
+        newLeft = Math.max(0, Math.min(vw - w, newLeft));
+        newTop = Math.max(0, Math.min(vh - h, newTop));
+
+        widget.style.left = newLeft + 'px';
+        widget.style.top = newTop + 'px';
+        widget.style.transform = 'none';
+    });
+
+    function endDrag(e) {
+        if (!isDragging) return;
+        isDragging = false;
+        widget.classList.remove('dragging');
+    }
+
+    widget.addEventListener('pointerup', endDrag);
+    widget.addEventListener('pointercancel', endDrag);
+})();
+
+// ==========================================================================
+// LOCATION AUTO-SUGGEST (Datalist loader)
+// ==========================================================================
+
+function loadLocationOptions(targetInputId) {
+    var input = document.getElementById(targetInputId);
+    if (!input) return;
+    var datalist = document.getElementById('loc-list');
+    if (!datalist) return;
+
+    fetch('/api/staff/locations')
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+            var locs = (data && data.locations) || [];
+            datalist.innerHTML = '';
+            for (var i = 0; i < locs.length; i++) {
+                var opt = document.createElement('option');
+                opt.value = locs[i];
+                datalist.appendChild(opt);
+            }
+        })
+        .catch(function(err) { console.warn('Location load failed:', err); });
+}
+
+function addNewLocation() {
+    var input = document.getElementById('a-location') || document.getElementById('e-location');
+    if (!input) return;
+    var newLoc = prompt('เพิ่มตำแหน่งจัดเก็บใหม่:\n(เช่น โซน A1, ชั้น B2)');
+    if (!newLoc || !newLoc.trim()) return;
+    newLoc = newLoc.trim();
+    input.value = newLoc;
+
+    var datalist = document.getElementById('loc-list');
+    if (datalist) {
+        var exists = false;
+        for (var i = 0; i < datalist.options.length; i++) {
+            if (datalist.options[i].value === newLoc) { exists = true; break; }
+        }
+        if (!exists) {
+            var opt = document.createElement('option');
+            opt.value = newLoc;
+            datalist.appendChild(opt);
+        }
+    }
+    showToast('เพิ่มตำแหน่ง "' + newLoc + '" แล้ว', 'success');
+}
+
+// Load locations on open modal
+document.addEventListener('DOMContentLoaded', function() {
+    setTimeout(function() {
+        loadLocationOptions('a-location');
+        loadLocationOptions('e-location');
+    }, 500);
+});
