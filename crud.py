@@ -741,7 +741,8 @@ def export_stock_report_data():
             "รหัสตำแหน่ง": p.get("location_code") or "-",
             "ตำแหน่งจัดเก็บ": p.get("location") or "-",
             "รายละเอียด/สเปก": p.get("description") or "",
-            "วันที่อัปเดตล่าสุด": str(p.get("updated_at") or "-")
+            "วันที่อัปเดตล่าสุด": str(p.get("updated_at") or "-"),
+            "รูปภาพ": p.get("image_path") or p.get("image_url") or ""
         })
     return report_rows
 

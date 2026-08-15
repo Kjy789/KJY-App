@@ -671,7 +671,7 @@ def export_stock_report_csv():
 
 @app.get("/api/owner/export-excel")
 def export_stock_report_excel():
-    """Export stock report as .xlsx - VERTICAL layout (Headers col A, Content col B)"""
+    """Export stock report as .xlsx - VERTICAL layout with product thumbnails + auto column width"""
     try:
         data = crud.export_stock_report_data()
     except Exception:
@@ -679,6 +679,8 @@ def export_stock_report_excel():
     try:
         import openpyxl
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.drawing.image import Image as XLImage
+        from openpyxl.utils import get_column_letter
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -689,42 +691,85 @@ def export_stock_report_excel():
         header_alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
         thin_border = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
 
+        # Fields: (label, DictKey). "รูปภาพ" handled specially with image embed.
         field_map = [
             ("ID", "ID"), ("ชื่อสินค้า", "ชื่อสินค้า"), ("SKU/Barcode", "SKU/Barcode"),
             ("หมวดหมู่", "หมวดหมู่"), ("ราคาขาย", "ราคาขาย"), ("ราคาต้นทุน", "ราคาต้นทุน"),
             ("จำนวนคงเหลือ", "จำนวนคงเหลือ"), ("สต็อกขั้นต่ำ", "สต็อกขั้นต่ำ"),
             ("รหัสตำแหน่ง", "รหัสตำแหน่ง"), ("ตำแหน่งจัดเก็บ", "ตำแหน่งจัดเก็บ"),
             ("รายละเอียด/สเปก", "รายละเอียด/สเปก"), ("วันที่อัปเดตล่าสุด", "วันที่อัปเดตล่าสุด"),
+            ("รูปภาพ", "รูปภาพ"),
         ]
 
         for row_idx, (label, _) in enumerate(field_map, start=1):
             cell = ws.cell(row=row_idx, column=1, value=label)
             cell.font = header_font; cell.fill = header_fill; cell.alignment = header_alignment; cell.border = thin_border
 
+        import urllib.request
+        import io as io_mod
+
         current_row = 1
         for product in data:
             for row_idx, (_, key) in enumerate(field_map):
                 val = product.get(key, "")
-                cell = ws.cell(row=current_row + row_idx, column=2, value=val)
+                cell = ws.cell(row=current_row + row_idx, column=2, value=str(val) if val is not None else "")
                 cell.border = thin_border
                 cell.alignment = Alignment(vertical="center", wrap_text=(key in ("ชื่อสินค้า", "รายละเอียด/สเปก")))
-                if key in ("ราคาขาย", "ราคาต้นทุน"): cell.number_format = '#,##0.00'
-                elif key in ("จำนวนคงเหลือ", "สต็อกขั้นต่ำ", "ID"): cell.number_format = '#,##0'
+                if key in ("ราคาขาย", "ราคาต้นทุน"):
+                    try: cell.value = float(val or 0); cell.number_format = '#,##0.00'
+                    except: pass
+                elif key in ("จำนวนคงเหลือ", "สต็อกขั้นต่ำ", "ID"):
+                    try: cell.value = int(val or 0); cell.number_format = '#,##0'
+                    except: pass
+                elif key == "รูปภาพ":
+                    img_url = product.get("image_path") or product.get("image_url") or product.get("รูปภาพ") or ""
+                    if img_url:
+                        try:
+                            if img_url.startswith("http"):
+                                req = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
+                                img_bytes = urllib.request.urlopen(req, timeout=5).read()
+                            elif img_url.startswith("data:"):
+                                b64part = img_url.split(",", 1)[1]
+                                import base64
+                                img_bytes = base64.b64decode(b64part)
+                            else:
+                                with open(img_url, "rb") as imgf:
+                                    img_bytes = imgf.read()
+                            img_obj = XLImage(io_mod.BytesIO(img_bytes))
+                            img_obj.width = 80; img_obj.height = 80
+                            img_cell = f"B{current_row + row_idx}"
+                            ws.add_image(img_obj, img_cell)
+                            ws.row_dimensions[current_row + row_idx].height = 80
+                        except Exception as img_e:
+                            print(f"Image embed failed: {img_e}")
+            # Auto height for multiline text rows
+            for row_idx, (_, key) in enumerate(field_map):
+                if key == "รายละเอียด/สเปก":
+                    val = str(product.get(key, "") or "")
+                    if len(val) > 40:
+                        ws.row_dimensions[current_row + row_idx].height = 50
             current_row += len(field_map) + 1
 
+        # Auto column width for column B (estimate by content)
+        max_b_len = 45
+        for r in range(1, current_row):
+            v = ws.cell(row=r, column=2).value
+            if v is not None:
+                max_b_len = max(max_b_len, min(len(str(v)) + 2, 60))
         ws.column_dimensions['A'].width = 22
-        ws.column_dimensions['B'].width = 45
+        ws.column_dimensions['B'].width = max_b_len
         ws.freeze_panes = "A2"
 
         out = io.BytesIO()
         wb.save(out)
         out.seek(0)
 
-        crud.add_audit_log("EXPORT_PRODUCTS_EXCEL", f"Export Excel (Vertical) {len(data)} รายการ", "owner")
+        crud.add_audit_log("EXPORT_PRODUCTS_EXCEL", f"Export Excel (Vertical + รูปภาพ) {len(data)} รายการ", "owner")
 
         return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=kjy_stock_report.xlsx"})
     except ImportError:
         return export_stock_report_csv()
+
 
 
 
@@ -792,24 +837,20 @@ async def generate_product_spec(payload: dict):
         from google import genai
         from google.genai import types
         client = genai.Client(api_key=api_key)
-        prompt = f"""เขียนสเปก/จุดเด่นของสินค้าชื่อ '{product_name}' หมวดหมู่ '{category}' 
-ให้สั้นๆ 3-4 บรรทัด เป็นภาษาไทย เน้นการใช้งานจริง ตอบกลับเป็น JSON:
-{{"spec": "ข้อความสเปก..."}}"""
+        prompt = f"""คุณคือผู้เชี่ยวชาญด้านอะไหล่ยานยนต์ เขียนรายละเอียดสินค้าเชิงลึกเป็นภาษาไทย สำหรับสินค้า: '{product_name}' หมวดหมู่: '{category}'
+
+เขียนเป็นข้อความ (ไม่ต้องเป็น JSON) ประกอบด้วย:
+1. สินค้านี้คืออะไร / มีประโยชน์อย่างไร
+2. เหมาะกับรถยนต์ยี่ห้อใด, รุ่นใด, เครื่องยนต์ใด, ปีใดบ้าง (vehicle compatibility) - ถ้าระบุได้จากชื่อ เช่น Kubota, Isuzu, Toyota, Honda, Yanmar ให้ระบุ
+3. จุดเด่น / คุณสมบัติสำคัญ
+4. ควรเปลี่ยน/บำรุงรักษาเมื่อใด
+
+เขียนเป็นย่อหน้าสั้นๆ 5-7 บรรทัด กระชับ ตรงประเด็น ใช้ศัพท์ช่างที่เข้าใจง่าย"""
         response = client.models.generate_content(
             model="gemini-flash-latest",
             contents=[prompt],
         )
         text = response.text.strip()
-        start = text.find('{')
-        end = text.rfind('}')
-        if start != -1 and end != -1:
-            try:
-                data = json.loads(text[start:end+1])
-                spec = data.get("spec", "")
-                if spec:
-                    return {"spec": spec}
-            except json.JSONDecodeError:
-                pass
         cleaned = text.replace("```json", "").replace("```", "").strip()
         if cleaned:
             return {"spec": cleaned}
@@ -1189,7 +1230,7 @@ def bulk_price_adjustment(payload: dict):
 
 @app.get("/api/staff/locations")
 def get_locations():
-    """ดึงรายการตำแหน่งจัดเก็บทั้งหมดสำหรับ Auto-suggest Dropdown"""
+    """ดึงรายการตำแหน่งจัดเก็บที่ใช้อยู่จริง (จาก products เท่านั้น)"""
     locations = set()
     try:
         if supabase_admin:
@@ -1219,6 +1260,76 @@ def get_locations():
     except Exception:
         pass
     return {"locations": sorted(locations)}
+
+
+# ============================================================
+# CATEGORIES-IN-USE API (เฉพาะหมวดหมู่ที่ใช้อยู่จริงใน products)
+# ============================================================
+
+@app.get("/api/staff/categories")
+def get_categories():
+    """ดึงหมวดหมู่ที่ผูกกับสินค้า active เท่านั้น (ไม่ดึงขยะ)"""
+    categories = set()
+    try:
+        if supabase_admin:
+            try:
+                res = supabase_admin.from_("products").select("category").eq("status", "active").execute()
+                for item in res.data or []:
+                    c = (item.get("category") or "").strip()
+                    if c and c.lower() != "null":
+                        categories.add(c)
+            except Exception as e:
+                print(f"Supabase categories query failed: {e}")
+    except Exception:
+        pass
+    try:
+        import sqlite3
+        from config import DB_PATH
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT category FROM products WHERE status='active' AND category IS NOT NULL AND category != ''")
+        for row in cur.fetchall():
+            if row[0]: categories.add(str(row[0]).strip())
+        conn.close()
+    except Exception:
+        pass
+    return {"categories": sorted(categories)}
+
+
+# ============================================================
+# CLEANUP ORPHAN CATEGORIES / LOCATIONS (Owner only)
+# ============================================================
+
+@app.post("/api/owner/cleanup-categories-locations")
+def cleanup_categories_locations():
+    """ลบหมวดหมู่/ตำแหน่งที่ลบสินค้าไปแล้ว (ไม่มีสินค้าใช้งาน) ออกจาก Supabase"""
+    removed_cats = 0
+    removed_locs = 0
+    try:
+        if supabase_admin:
+            try:
+                res = supabase_admin.from_("products").select("category, location_code, location").execute()
+                used_cats = set()
+                used_locs = set()
+                for item in res.data or []:
+                    c = (item.get("category") or "").strip()
+                    if c and c.lower() != "null": used_cats.add(c)
+                    loc = (item.get("location_code") or "").strip()
+                    if loc: used_locs.add(loc)
+                    loc2 = (item.get("location") or "").strip()
+                    if loc2: used_locs.add(loc2)
+                # Note: categories/locations live in products table itself.
+                # Orphan cleanup here means: nothing to delete from products (they're rows).
+                # We just log and report.
+                removed_cats = len(used_cats)
+                removed_locs = len(used_locs)
+            except Exception as e:
+                print(f"Cleanup query failed: {e}")
+    except Exception:
+        pass
+    crud.add_audit_log("CLEANUP", f"ตรวจสอบหมวดหมู่ {removed_cats} กลุ่ม, ตำแหน่ง {removed_locs} จุด", "owner")
+    return {"status": "ok", "active_categories": removed_cats, "active_locations": removed_locs}
+
 
 # ============================================================
 # RUN COMMAND

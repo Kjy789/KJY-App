@@ -1946,19 +1946,23 @@ input, select, textarea {
     font-size: 16px; /* prevent iOS zoom on focus */
 }
 
-/* ============ SALES ASSISTANT - Left-Center + Draggable ============ */
+/* ============ SALES ASSISTANT - Bottom-Right + Draggable ============ */
 .sales-fab {
     position: fixed;
-    left: 20px;
-    top: 50%;
-    transform: translateY(-50%);
+    right: 20px;
+    bottom: 20px;
+    left: auto;
+    top: auto;
+    transform: none;
     z-index: 999;
 }
 .sales-assistant-widget {
     position: fixed;
-    left: 20px;
-    top: 50%;
-    transform: translateY(-50%);
+    right: 20px;
+    bottom: 80px;
+    left: auto;
+    top: auto;
+    transform: none;
     width: 320px;
     max-width: 85vw;
     z-index: 1000;
@@ -1998,11 +2002,16 @@ input, select, textarea {
         width: 100%;
     }
     .sales-fab {
-        left: 12px;
-        top: 50%;
+        right: 12px;
+        bottom: 88px;
+        left: auto;
+        top: auto;
     }
     .sales-assistant-widget {
-        left: 12px;
+        right: 12px;
+        bottom: 152px;
+        left: auto;
+        top: auto;
         width: min(85vw, 320px);
     }
 }
@@ -2027,4 +2036,28 @@ input, select, textarea {
 .data-table {
     min-width: 620px;
     width: 100%;
+}
+
+
+/* ============================================================
+   TOUCH TARGET ENHANCEMENTS - iPad & Mobile
+   ============================================================ */
+@media (max-width: 1024px) {
+    .chip, .btn-primary, .btn-outline, .btn-green, .btn-danger, .btn-icon,
+    .qty-btn, .pre, .p-tab, .nav-item, .bot-btn {
+        min-height: 44px;
+    }
+    .chip { padding: 10px 14px; }
+    .search-input, .input, select.input, textarea.input {
+        min-height: 44px;
+    }
+    .product-card-footer button, .btn-add-cart {
+        min-height: 40px;
+    }
+}
+
+/* Ensure no fixed widths block scrolling on small screens */
+@media (max-width: 768px) {
+    .grid-wrap { overflow-x: hidden; }
+    .main { overflow-x: hidden; }
 }

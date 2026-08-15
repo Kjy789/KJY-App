@@ -2608,3 +2608,40 @@ document.addEventListener('DOMContentLoaded', function() {
         loadLocationOptions('e-location');
     }, 500);
 });
+
+
+// ==========================================================================
+// CATEGORY AUTO-SUGGEST (จาก products ที่ใช้อยู่จริงเท่านั้น)
+// ==========================================================================
+
+function loadCategoryOptions() {
+    var datalist = document.getElementById('cat-list');
+    if (!datalist) return;
+    fetch('/api/staff/categories')
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+            var cats = (data && data.categories) || [];
+            datalist.innerHTML = '';
+            for (var i = 0; i < cats.length; i++) {
+                var opt = document.createElement('option');
+                opt.value = cats[i];
+                datalist.appendChild(opt);
+            }
+        })
+        .catch(function(err) { console.warn('Category load failed:', err); });
+}
+
+// Load categories when opening add/edit modals
+var _origOpenAddProduct = openAddProduct;
+openAddProduct = function() {
+    if (typeof _origOpenAddProduct === 'function') _origOpenAddProduct();
+    loadCategoryOptions();
+    loadLocationOptions('a-location');
+};
+
+var _origOpenEditProduct = openEditProduct;
+openEditProduct = function(productId) {
+    if (typeof _origOpenEditProduct === 'function') _origOpenEditProduct(productId);
+    loadCategoryOptions();
+    setTimeout(function() { loadLocationOptions('e-location'); }, 300);
+};
