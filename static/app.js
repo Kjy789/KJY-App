@@ -950,6 +950,10 @@ async function aiScanProductImage(file) {
             var catField = document.getElementById('a-cat');
             if (catField && !catField.value) catField.value = data.category;
         }
+        if (data.description && data.description.trim()) {
+            var descField = document.getElementById('a-desc');
+            if (descField && !descField.value) descField.value = data.description;
+        }
         if (data.suggested_location) {
             var locField = document.getElementById('a-loc');
             if (locField && !locField.value) locField.value = data.suggested_location;
@@ -1152,9 +1156,12 @@ function openScanner(ctx) {
     }
 
     html5QrcodeScanner = new Html5Qrcode('reader');
+    // ร้องขอสิทธิ์กล้อง + ใช้กล้องหลัง (environment) ตามข้อกำหนด
     html5QrcodeScanner.start(
+        // facingMode: 'environment' = กล้องหลัง
+        // fallback constraints เผื่ออุปกรณ์ไม่รองรับ facingMode
         { facingMode: 'environment' },
-        { fps: 12, qrbox: { width: 260, height: 160 } },
+        { fps: 12, qrbox: { width: 260, height: 160 }, aspectRatio: 1.0 },
         function(decoded) {
             closeScanner();
             handleBarcodeResult(decoded, ctx);
@@ -1162,10 +1169,84 @@ function openScanner(ctx) {
         function() {}
     ).catch(function(err) {
         console.error('Camera error:', err);
-        closeScanner();
-        showToast('ไม่สามารถเปิดกล้องได้ กรุณาอนุญาตการเข้าถึงกล้อง', 'error');
+        // Fallback 1: ลองขอสิทธิ์กล้องกึ่งกลาง (ไม่ระบุ facingMode) เผื่อกล้องหลังถูกบล็อก
+        try {
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment' },
+                    audio: false
+                }).then(function(stream) {
+                    stream.getTracks().forEach(function(t) { t.stop(); });
+                    // ได้สิทธิ์กล้องแล้ว ลองสแกนใหม่
+                    showToast('ขอสิทธิ์กล้องสำเร็จ ลองสแกนใหม่', 'success');
+                    setTimeout(function() { openScanner(ctx); }, 500);
+                }).catch(function(permErr) {
+                    console.error('Permission denied:', permErr);
+                    closeScanner();
+                    enableScannerGunMode();
+                    showToast('ไม่สามารถเปิดกล้องได้: ' + (permErr.name || '') + ' — เปิดโหมดพิมพ์บาร์โค้ดจากเครื่องสแกน USB/Bluetooth แทน', 'error');
+                });
+            } else {
+                closeScanner();
+                enableScannerGunMode();
+                showToast('อุปกรณ์นี้ไม่รองรับกล้องสแกน — เปิดโหมดพิมพ์บาร์โค้ดจากเครื่องสแกนแทน', 'error');
+            }
+        } catch (e) {
+            closeScanner();
+            enableScannerGunMode();
+            showToast('ไม่สามารถเปิดกล้องได้ — เปิดโหมดพิมพ์บาร์โค้ดแทน', 'error');
+        }
     });
 }
+
+// ==========================================================================
+// SCANNER GUN MODE (USB / Bluetooth HID) — ฟัง keypress พิมพ์รับค่าบาร์โค้ด
+// ==========================================================================
+let scannerGunActive = false;
+let scannerGunBuffer = '';
+let scannerGunTimer = null;
+
+function enableScannerGunMode() {
+    scannerGunActive = true;
+    scannerGunBuffer = '';
+    showToast('📷 โหมดสแกนเนอร์: พิมพ์/กรอกบาร์โค้ดแล้วกด Enter หรือรอ 100ms', 'success');
+}
+
+function disableScannerGunMode() {
+    scannerGunActive = false;
+    scannerGunBuffer = '';
+}
+
+// ฟัง keypress ทั่วหน้าเว็บ — เครื่องสแกน USB/Bluetooth จะพิมพ์ทีละตัวแล้ว Enter
+document.addEventListener('keydown', function(e) {
+    if (!scannerGunActive) return;
+    // ตัวพิมพ์/ตัวเลขจากเครื่องสแกน
+    if (e.key && e.key.length === 1) {
+        scannerGunBuffer += e.key;
+        // ป้องกันตัวเลขไปกวน input ที่ focus อยู่
+        var focused = document.activeElement;
+        if (focused && focused.tagName === 'INPUT') {
+            // เครื่องสแกนพิมพ์เร็วมาก (ทุกตัว < 100ms) - ถือว่าเป็นสแกน
+            clearTimeout(scannerGunTimer);
+            scannerGunTimer = setTimeout(function() {
+                if (scannerGunBuffer.length >= 3) {
+                    var barcode = scannerGunBuffer;
+                    scannerGunBuffer = '';
+                    handleBarcodeResult(barcode, barcodeScannerCtx);
+                }
+            }, 100);
+        }
+    } else if (e.key === 'Enter') {
+        // เครื่องสแกนหลายรุ่นปิดท้ายด้วย Enter
+        if (scannerGunBuffer.length >= 3) {
+            var barcode = scannerGunBuffer;
+            scannerGunBuffer = '';
+            e.preventDefault();
+            e.stopPropagation();
+            handleBarcodeResult(barcode, barcodeScannerCtx);
+        }
+    }
+});
 
 function closeScanner() {
     if (html5QrcodeScanner) {

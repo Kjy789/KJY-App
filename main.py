@@ -313,26 +313,39 @@ async def scan_product(file: UploadFile = File(...)):
     compressed_bytes, compressed_mime = compress_image_bytes(image_bytes, max_size=800, quality=75)
 
     client = genai.Client(api_key=api_key)
-    prompt = """ดูรูปภาพสินค้านี้แล้วตอบกลับเป็น JSON เท่านั้น:
+    prompt = """ดูรูปภาพสินค้า/อะไหล่ยานยนต์นี้ แล้วตอบกลับเป็น JSON เท่านั้น (ภาษาไทย):
 {
-  "name": "ชื่อสินค้าภาษาไทย",
+  "name": "ชื่อสินค้า / ประเภทอะไหล่ (เช่น กรองน้ำมันเครื่อง Kubota, น็อตล้อ M12, สายพานพัดลม)",
   "category": "หมวดหมู่สินค้า เช่น น็อต-สกรู, สายพาน, กรองอากาศ, น้ำมัน, ยาง, อะไหล่เกษตร",
+  "brand": "ยี่ห้อ/แบรนด์ หรือ Part Number ที่อ่านได้จากตัวสินค้าหรือบรรจุภัณฑ์ (ถ้ามี เช่น Kubota, 1G520, 15681-32420)",
+  "description": "รายละเอียดคุณลักษณะโดยสังเขป (วัสดุ, ขนาด, ลักษณะการใช้งาน 1-2 ประโยค)",
   "suggested_location": ""
 }"""
 
     try:
         response = client.models.generate_content(
-            model="gemini-flash-latest",
+            model="gemini-2.5-flash",
             contents=[prompt, types.Part.from_bytes(data=compressed_bytes, mime_type=compressed_mime)],
         )
         text = response.text.strip()
         start = text.find('{')
         end = text.rfind('}')
         if start != -1 and end != -1:
-            return json.loads(text[start:end+1])
+            data = json.loads(text[start:end+1])
+            # รวม brand เข้ากับ name/description เพื่อ Auto-fill
+            name = data.get("name", "") or ""
+            brand = data.get("brand", "") or ""
+            desc = data.get("description", "") or ""
+            if brand:
+                if desc:
+                    desc = f"ยี่ห้อ/Part No: {brand} — {desc}"
+                else:
+                    desc = f"ยี่ห้อ/Part No: {brand}"
+            data["description"] = desc
+            return data
     except Exception:
         pass
-    return {"name": "", "category": "", "suggested_location": ""}
+    return {"name": "", "category": "", "brand": "", "description": "", "suggested_location": ""}
 
 
 @app.post("/api/staff/products/add")
@@ -671,7 +684,7 @@ def export_stock_report_csv():
 
 @app.get("/api/owner/export-excel")
 def export_stock_report_excel():
-    """Export stock report as .xlsx - VERTICAL layout with product thumbnails + auto column width"""
+    """Export stock report as .xlsx - HORIZONTAL table with product thumbnail images"""
     try:
         data = crud.export_stock_report_data()
     except Exception:
@@ -686,89 +699,101 @@ def export_stock_report_excel():
         ws = wb.active
         ws.title = "Stock Report"
 
+        # --- Header (Row 1) แนวนอนทั้งหมด ---
+        headers = [
+            "รูปภาพ", "ID", "ชื่อสินค้า", "SKU/Barcode", "หมวดหมู่",
+            "ราคาขาย", "ราคาต้นทุน", "สต็อกหน้าร้าน", "สต็อกคลังหลังร้าน",
+            "จำนวนคงเหลือรวม", "รหัสตำแหน่ง", "ตำแหน่งจัดเก็บ",
+            "รายละเอียด/สเปก", "วันที่อัปเดต"
+        ]
         header_font = Font(bold=True, color="FFFFFF", size=11)
         header_fill = PatternFill(start_color="2B5797", end_color="2B5797", fill_type="solid")
-        header_alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         thin_border = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
 
-        # Fields: (label, DictKey). "รูปภาพ" handled specially with image embed.
-        field_map = [
-            ("ID", "ID"), ("ชื่อสินค้า", "ชื่อสินค้า"), ("SKU/Barcode", "SKU/Barcode"),
-            ("หมวดหมู่", "หมวดหมู่"), ("ราคาขาย", "ราคาขาย"), ("ราคาต้นทุน", "ราคาต้นทุน"),
-            ("จำนวนคงเหลือ", "จำนวนคงเหลือ"), ("สต็อกขั้นต่ำ", "สต็อกขั้นต่ำ"),
-            ("รหัสตำแหน่ง", "รหัสตำแหน่ง"), ("ตำแหน่งจัดเก็บ", "ตำแหน่งจัดเก็บ"),
-            ("รายละเอียด/สเปก", "รายละเอียด/สเปก"), ("วันที่อัปเดตล่าสุด", "วันที่อัปเดตล่าสุด"),
-            ("รูปภาพ", "รูปภาพ"),
-        ]
+        for col_idx, h in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col_idx, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = thin_border
 
-        for row_idx, (label, _) in enumerate(field_map, start=1):
-            cell = ws.cell(row=row_idx, column=1, value=label)
-            cell.font = header_font; cell.fill = header_fill; cell.alignment = header_alignment; cell.border = thin_border
-
+        # --- ข้อมูล (Row 2 เป็นต้นไป) - 1 สินค้า ต่อ 1 แถว แนวนอน ---
         import urllib.request
         import io as io_mod
+        import base64
 
-        current_row = 1
-        for product in data:
-            for row_idx, (_, key) in enumerate(field_map):
-                val = product.get(key, "")
-                cell = ws.cell(row=current_row + row_idx, column=2, value=str(val) if val is not None else "")
+        for row_idx, product in enumerate(data, start=2):
+            # คอลัมน์ A: รูปภาพ (thumbnail ขนาด ~50x50 px)
+            img_url = product.get("image_path") or product.get("image_url") or product.get("รูปภาพ") or ""
+            if img_url:
+                try:
+                    if str(img_url).startswith("http"):
+                        req = urllib.request.Request(str(img_url), headers={"User-Agent": "Mozilla/5.0"})
+                        img_bytes = urllib.request.urlopen(req, timeout=5).read()
+                    elif str(img_url).startswith("data:"):
+                        img_bytes = base64.b64decode(str(img_url).split(",", 1)[1])
+                    else:
+                        with open(img_url, "rb") as imgf:
+                            img_bytes = imgf.read()
+                    img_obj = XLImage(io_mod.BytesIO(img_bytes))
+                    img_obj.width = 50
+                    img_obj.height = 50
+                    ws.add_image(img_obj, f"A{row_idx}")
+                except Exception as img_e:
+                    print(f"Image embed failed row {row_idx}: {img_e}")
+
+            # คอลัมน์ B..N: ข้อมูล
+            row_vals = [
+                product.get("ID", ""),
+                product.get("ชื่อสินค้า") or "-",
+                product.get("SKU/Barcode") or "-",
+                product.get("หมวดหมู่") or "-",
+                product.get("ราคาขาย", 0),
+                product.get("ราคาต้นทุน", 0),
+                product.get("สต็อกหน้าร้าน", product.get("front_stock", 0)),
+                product.get("สต็อกคลังหลังร้าน", product.get("warehouse_stock", 0)),
+                product.get("จำนวนคงเหลือรวม", product.get("stock_qty", 0)),
+                product.get("รหัสตำแหน่ง") or "-",
+                product.get("ตำแหน่งจัดเก็บ") or "-",
+                product.get("รายละเอียด/สเปก") or "",
+                product.get("วันที่อัปเดตล่าสุด") or "-",
+            ]
+            for col_idx, val in enumerate(row_vals, start=2):
+                cell = ws.cell(row=row_idx, column=col_idx, value=val)
                 cell.border = thin_border
-                cell.alignment = Alignment(vertical="center", wrap_text=(key in ("ชื่อสินค้า", "รายละเอียด/สเปก")))
-                if key in ("ราคาขาย", "ราคาต้นทุน"):
-                    try: cell.value = float(val or 0); cell.number_format = '#,##0.00'
+                cell.alignment = Alignment(vertical="center", wrap_text=(col_idx in (3, 13)))
+                # ฟอร์แมตตัวเลข
+                if col_idx in (6, 7):  # ราคา
+                    try: cell.number_format = '#,##0.00'
                     except: pass
-                elif key in ("จำนวนคงเหลือ", "สต็อกขั้นต่ำ", "ID"):
-                    try: cell.value = int(val or 0); cell.number_format = '#,##0'
+                elif col_idx in (8, 9, 10):  # สต็อก
+                    try: cell.number_format = '#,##0'
                     except: pass
-                elif key == "รูปภาพ":
-                    img_url = product.get("image_path") or product.get("image_url") or product.get("รูปภาพ") or ""
-                    if img_url:
-                        try:
-                            if img_url.startswith("http"):
-                                req = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
-                                img_bytes = urllib.request.urlopen(req, timeout=5).read()
-                            elif img_url.startswith("data:"):
-                                b64part = img_url.split(",", 1)[1]
-                                import base64
-                                img_bytes = base64.b64decode(b64part)
-                            else:
-                                with open(img_url, "rb") as imgf:
-                                    img_bytes = imgf.read()
-                            img_obj = XLImage(io_mod.BytesIO(img_bytes))
-                            img_obj.width = 80; img_obj.height = 80
-                            img_cell = f"B{current_row + row_idx}"
-                            ws.add_image(img_obj, img_cell)
-                            ws.row_dimensions[current_row + row_idx].height = 80
-                        except Exception as img_e:
-                            print(f"Image embed failed: {img_e}")
-            # Auto height for multiline text rows
-            for row_idx, (_, key) in enumerate(field_map):
-                if key == "รายละเอียด/สเปก":
-                    val = str(product.get(key, "") or "")
-                    if len(val) > 40:
-                        ws.row_dimensions[current_row + row_idx].height = 50
-            current_row += len(field_map) + 1
 
-        # Auto column width for column B (estimate by content)
-        max_b_len = 45
-        for r in range(1, current_row):
-            v = ws.cell(row=r, column=2).value
-            if v is not None:
-                max_b_len = max(max_b_len, min(len(str(v)) + 2, 60))
-        ws.column_dimensions['A'].width = 22
-        ws.column_dimensions['B'].width = max_b_len
+            # ความสูง Row ให้พอดีกับรูป 50px
+            ws.row_dimensions[row_idx].height = 55
+
+        # --- Auto-fit ความกว้างคอลัมน์ (ประเมินจากเนื้อหา) ---
+        col_widths = {1: 12, 2: 8, 3: 32, 4: 18, 5: 16, 6: 12, 7: 12, 8: 14, 9: 16, 10: 16, 11: 14, 12: 22, 13: 40, 14: 20}
+        for c_idx, w in col_widths.items():
+            col_letter = get_column_letter(c_idx)
+            ws.column_dimensions[col_letter].width = w
+
+        # --- Freeze header + Auto filter ---
         ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{ws.max_row}"
 
         out = io.BytesIO()
         wb.save(out)
         out.seek(0)
 
-        crud.add_audit_log("EXPORT_PRODUCTS_EXCEL", f"Export Excel (Vertical + รูปภาพ) {len(data)} รายการ", "owner")
+        crud.add_audit_log("EXPORT_PRODUCTS_EXCEL", f"Export Excel (แนวนอน + รูปภาพ) {len(data)} รายการ", "owner")
 
         return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=kjy_stock_report.xlsx"})
     except ImportError:
         return export_stock_report_csv()
+
 
 
 
