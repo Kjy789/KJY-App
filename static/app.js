@@ -2726,3 +2726,27 @@ openEditProduct = function(productId) {
     loadCategoryOptions();
     setTimeout(function() { loadLocationOptions('e-location'); }, 300);
 };
+
+
+// ==========================================================================
+// SIDEBAR TOGGLE (Hover-to-Expand + Touch/iPad support)
+// ==========================================================================
+
+function toggleSidebar() {
+    var sidebar = document.getElementById('sidebar');
+    if (sidebar) sidebar.classList.toggle('expanded');
+}
+
+// Tap outside to collapse on touch devices
+document.addEventListener('click', function(e) {
+    var sidebar = document.getElementById('sidebar');
+    if (sidebar && sidebar.classList.contains('expanded') && !sidebar.contains(e.target)) {
+        sidebar.classList.remove('expanded');
+    }
+});
+
+// Collapse expanded sidebar when switching views (cleaner navigation)
+function collapseSidebar() {
+    var sidebar = document.getElementById('sidebar');
+    if (sidebar) sidebar.classList.remove('expanded');
+}
