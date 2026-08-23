@@ -18,7 +18,7 @@ from starlette.formparsers import MultiPartParser
 
 from database import init_db, supabase_admin
 import crud
-from config import RECEIPT_IMAGES_DIR, PRODUCT_IMAGES_DIR, LOCATION_IMAGES_DIR, GEMINI_API_KEY, BASE_DIR
+from config import RECEIPT_IMAGES_DIR, PRODUCT_IMAGES_DIR, LOCATION_IMAGES_DIR, GEMINI_API_KEY, GEMINI_API_KEY_BACKUP, BASE_DIR
 
 # PIN Code for Boss Mode (default: 1234)
 BOSS_PIN = "1234"
@@ -147,48 +147,82 @@ async def save_uploaded_file(file: UploadFile, folder_dir: str, prefix: str = ""
 
 
 # ============================================================
+# GEMINI MULTI-KEY & MULTI-MODEL HELPER (Silent Failover)
+# ============================================================
+def _get_gemini_keys():
+    primary = GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY", "")
+    backup = GEMINI_API_KEY_BACKUP or os.environ.get("GEMINI_API_KEY_BACKUP", "")
+    if not primary:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api.txt")
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    primary = f.read().strip()
+            except Exception:
+                pass
+    if not backup:
+        b = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api_backup.txt")
+        if os.path.exists(b):
+            try:
+                with open(b, "r", encoding="utf-8") as f:
+                    backup = f.read().strip()
+            except Exception:
+                pass
+    return primary, backup
+
+
+def _gemini_generate(contents, primary_model="gemini-3.6-flash", backup_model="gemini-3.5-flash"):
+    from google import genai
+    primary_key, backup_key = _get_gemini_keys()
+    attempts = []
+    if primary_key:
+        attempts.append((primary_key, primary_model))
+    if backup_key:
+        attempts.append((backup_key, backup_model))
+    if primary_key and not backup_key:
+        attempts.append((primary_key, backup_model))
+    last_err = None
+    for key, model in attempts:
+        try:
+            client = genai.Client(api_key=key)
+            response = client.models.generate_content(model=model, contents=contents)
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            last_err = e
+            print(f"[GEMINI] Model '{model}' failed: {e}")
+            continue
+    if last_err:
+        print(f"[GEMINI] All attempts failed: {last_err}")
+    return None
+
+
+# ============================================================
 # GEMINI VISION & OCR HELPERS
 # ============================================================
 
 def call_gemini_ocr(image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
-    """เรียก Google Gemini API ให้อ่านบิลสั่งซื้อสินค้า"""
-    api_key = GEMINI_API_KEY
-    if not api_key:
-        api_txt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api.txt")
-        if os.path.exists(api_txt_path):
-            with open(api_txt_path, "r", encoding="utf-8") as f:
-                api_key = f.read().strip()
-
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="ยังไม่ได้ตั้งค่า GEMINI_API_KEY"
-        )
-
-    from google import genai
+    """เรียก Google Gemini API ให้อ่านบิลสั่งซื้อสินค้า (Multi-Key & Multi-Model Fallback)"""
     from google.genai import types
 
     # Compress image to prevent Gemini API 1024KB Part size limit error
     compressed_bytes, compressed_mime = compress_image_bytes(image_bytes, max_size=800, quality=75)
 
-    client = genai.Client(api_key=api_key)
     prompt = """อ่านบิล/ใบเสร็จสั่งของในรูปนี้ แล้วตอบกลับเป็น JSON array เท่านั้น
 ห้ามมีข้อความอื่นนอกเหนือจาก JSON ในรูปแบบนี้:
 [{"name": "ชื่อสินค้า", "qty": จำนวน, "unit_cost": ราคาต่อหน่วย}]
 ถ้าอ่านตัวเลขไม่ชัด ให้ใส่ค่าที่อ่านได้ใกล้เคียงที่สุด"""
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-flash-latest",
-            contents=[
-                prompt,
-                types.Part.from_bytes(data=compressed_bytes, mime_type=compressed_mime),
-            ],
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Gemini API Error: {str(e)}")
+    # Multi-Key + Multi-Model fallback (primary gemini-3.6-flash -> backup gemini-3.5-flash)
+    text = _gemini_generate(
+        [prompt, types.Part.from_bytes(data=compressed_bytes, mime_type=compressed_mime)],
+        primary_model="gemini-3.6-flash",
+        backup_model="gemini-3.5-flash"
+    )
+    if not text:
+        raise HTTPException(status_code=500, detail="Gemini API Error: ไม่สามารถอ่านบิลได้ (ทุก API Key ล้มเหลว)")
 
-    text = response.text.strip()
+    text = text.strip()
     start = text.find('[')
     end = text.rfind(']')
     if start != -1 and end != -1:
@@ -288,6 +322,7 @@ def get_staff_product_detail(product_id: int):
     raise HTTPException(status_code=404, detail="ไม่พบสินค้า")
 
 
+
 @app.post("/api/staff/scan-product")
 async def scan_product(file: UploadFile = File(...)):
     """
@@ -296,55 +331,44 @@ async def scan_product(file: UploadFile = File(...)):
     image_bytes = await file.read()
     mime_type = file.content_type or "image/jpeg"
 
-    api_key = GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        api_txt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api.txt")
-        if os.path.exists(api_txt_path):
-            with open(api_txt_path, "r", encoding="utf-8") as f:
-                api_key = f.read().strip()
-
-    if not api_key:
-        return {"name": "", "category": "", "suggested_location": ""}
-
-    from google import genai
     from google.genai import types
 
     # Compress image to prevent Gemini API 1024KB Part size limit error
     compressed_bytes, compressed_mime = compress_image_bytes(image_bytes, max_size=800, quality=75)
 
-    client = genai.Client(api_key=api_key)
-    prompt = """ดูรูปภาพสินค้า/อะไหล่ยานยนต์นี้ แล้วตอบกลับเป็น JSON เท่านั้น (ภาษาไทย):
+    prompt = """ดูรูปภาพสินค้า/อะไหล่ยานต์นี้ แล้วตอบกลับเป็น JSON เท่านั้น (ภาษาไทย):
 {
   "name": "ชื่อสินค้า / ประเภทอะไหล่ (เช่น กรองน้ำมันเครื่อง Kubota, น็อตล้อ M12, สายพานพัดลม)",
   "category": "หมวดหมู่สินค้า เช่น น็อต-สกรู, สายพาน, กรองอากาศ, น้ำมัน, ยาง, อะไหล่เกษตร",
-  "brand": "ยี่ห้อ/แบรนด์ หรือ Part Number ที่อ่านได้จากตัวสินค้าหรือบรรจุภัณฑ์ (ถ้ามี เช่น Kubota, 1G520, 15681-32420)",
-  "description": "รายละเอียดคุณลักษณะโดยสังเขป (วัสดุ, ขนาด, ลักษณะการใช้งาน 1-2 ประโยค)",
+  "brand": "ยี่ห้อ/แบรนด์ หรือ Part Number ที่อ่านได้จากตัวสินค้าหรือบรรจุภัณฑ์ (ถ้ามี)",
+  "description": "รายละเอียดคุณลักษณะโดยสังเขป (วัสดุ, ขนาด, การใช้งาน 1-2 ประโยค)",
   "suggested_location": ""
 }"""
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[prompt, types.Part.from_bytes(data=compressed_bytes, mime_type=compressed_mime)],
-        )
-        text = response.text.strip()
+    # Multi-Key + Multi-Model fallback (primary gemini-3.6-flash -> backup gemini-3.5-flash)
+    text = _gemini_generate(
+        [prompt, types.Part.from_bytes(data=compressed_bytes, mime_type=compressed_mime)],
+        primary_model="gemini-3.6-flash",
+        backup_model="gemini-3.5-flash"
+    )
+    if text:
+        text = text.strip()
         start = text.find('{')
         end = text.rfind('}')
         if start != -1 and end != -1:
-            data = json.loads(text[start:end+1])
-            # รวม brand เข้ากับ name/description เพื่อ Auto-fill
-            name = data.get("name", "") or ""
-            brand = data.get("brand", "") or ""
-            desc = data.get("description", "") or ""
-            if brand:
-                if desc:
-                    desc = f"ยี่ห้อ/Part No: {brand} — {desc}"
-                else:
-                    desc = f"ยี่ห้อ/Part No: {brand}"
-            data["description"] = desc
-            return data
-    except Exception:
-        pass
+            try:
+                data = json.loads(text[start:end+1])
+                brand = data.get("brand", "") or ""
+                desc = data.get("description", "") or ""
+                if brand:
+                    if desc:
+                        desc = f"ยี่ห้อ/Part No: {brand} — {desc}"
+                    else:
+                        desc = f"ยี่ห้อ/Part No: {brand}"
+                data["description"] = desc
+                return data
+            except Exception:
+                pass
     return {"name": "", "category": "", "brand": "", "description": "", "suggested_location": ""}
 
 
@@ -841,46 +865,33 @@ def get_audit_logs(limit: int = Query(100)):
 
 @app.post("/api/ai/generate-spec")
 async def generate_product_spec(payload: dict):
-    """ใช้ Gemini AI สรุปสเปก/จุดเด่นสินค้าสั้นๆ"""
+    """ใช้ Gemini AI สรุปสเปก/จุดเด่นสินค้าแบบ Bullet Points (Multi-Key & Multi-Model Fallback)"""
     product_name = payload.get("name", "")
     category = payload.get("category", "")
 
     if not product_name:
         return {"spec": ""}
 
-    api_key = GEMINI_API_KEY
-    if not api_key:
-        api_txt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api.txt")
-        if os.path.exists(api_txt_path):
-            with open(api_txt_path, "r", encoding="utf-8") as f:
-                api_key = f.read().strip()
+    prompt = f"""คุณคือผู้เชี่ยวชาญด้านอะไหล่ยานยนต์ เขียนรายละเอียดสินค้าเป็นภาษาไทย สำหรับสินค้า: '{product_name}' หมวดหมู่: '{category}'
 
-    if not api_key:
-        return {"spec": f"สินค้า: {product_name} | หมวดหมู่: {category}"}
+เขียนเป็นข้อๆ (Bullet Points) โดยใช้สัญลักษณ์จุด (•) เท่านั้น ห้ามใช้ตัวเลข 1, 2, 3 หรือสัญลักษณ์อื่นใดนำหน้า
+โครงสร้างรายละเอียดต้องครอบคลุมสั้นๆ ตามลำดับนี้:
+• สินค้านี้คืออะไร / สเปกพื้นฐาน (วัสดุ, ขนาด, ลักษณะ)
+• เอาไปใช้ทำอะไรได้บ้าง / ประโยชน์หลัก
+• เหมาะสำหรับใช้กับรถยนต์/อุปกรณ์ประเภทไหน รุ่นไหน ปีไหน (ถ้ามีข้อมูล เช่น Kubota, Isuzu, Toyota, Honda, Yanmar ให้ระบุ)
 
-    try:
-        from google import genai
-        from google.genai import types
-        client = genai.Client(api_key=api_key)
-        prompt = f"""คุณคือผู้เชี่ยวชาญด้านอะไหล่ยานยนต์ เขียนรายละเอียดสินค้าเชิงลึกเป็นภาษาไทย สำหรับสินค้า: '{product_name}' หมวดหมู่: '{category}'
+เขียนให้กระชับ ตรงประเด็น ใช้ศัพท์ช่างที่เข้าใจง่าย ประมาณ 3-5 ข้อ"""
 
-เขียนเป็นข้อความ (ไม่ต้องเป็น JSON) ประกอบด้วย:
-1. สินค้านี้คืออะไร / มีประโยชน์อย่างไร
-2. เหมาะกับรถยนต์ยี่ห้อใด, รุ่นใด, เครื่องยนต์ใด, ปีใดบ้าง (vehicle compatibility) - ถ้าระบุได้จากชื่อ เช่น Kubota, Isuzu, Toyota, Honda, Yanmar ให้ระบุ
-3. จุดเด่น / คุณสมบัติสำคัญ
-4. ควรเปลี่ยน/บำรุงรักษาเมื่อใด
-
-เขียนเป็นย่อหน้าสั้นๆ 5-7 บรรทัด กระชับ ตรงประเด็น ใช้ศัพท์ช่างที่เข้าใจง่าย"""
-        response = client.models.generate_content(
-            model="gemini-flash-latest",
-            contents=[prompt],
-        )
-        text = response.text.strip()
-        cleaned = text.replace("```json", "").replace("```", "").strip()
+    # Multi-Key + Multi-Model fallback (primary gemini-3.6-flash -> backup gemini-3.5-flash)
+    text = _gemini_generate(
+        [prompt],
+        primary_model="gemini-3.6-flash",
+        backup_model="gemini-3.5-flash"
+    )
+    if text:
+        cleaned = text.strip().replace("```json", "").replace("```", "").strip()
         if cleaned:
             return {"spec": cleaned}
-    except Exception as e:
-        print(f"AI spec generation failed: {e}")
 
     return {"spec": f"สินค้า: {product_name} | หมวดหมู่: {category}"}
 
@@ -1012,29 +1023,14 @@ async def ai_sales_assistant(payload: dict):
     if not message:
         return {"reply": "กรุณาพิมพ์คำถามเกี่ยวกับสินค้าครับ"}
 
-    api_key = GEMINI_API_KEY
-    if not api_key:
-        api_txt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api.txt")
-        if os.path.exists(api_txt_path):
-            with open(api_txt_path, "r", encoding="utf-8") as f:
-                api_key = f.read().strip()
+    cart_text = ""
+    if cart and len(cart) > 0:
+        cart_text = "\n\nตะกร้าสินค้าปัจจุบัน:\n"
+        for item in cart:
+            cart_text += f"- {item.get('name','-')} จำนวน {item.get('qty',0)} ชิ้น ราคา/ชิ้น ฿{item.get('price',0)}\n"
+        cart_text += f"\nยอดรวมตะกร้า: ฿{sum(item.get('price',0)*item.get('qty',0) for item in cart):.2f}"
 
-    if not api_key:
-        return {"reply": "ขออภัย ระบบ AI ยังไม่พร้อมใช้งาน (ไม่พบ API Key)"}
-
-    try:
-        from google import genai
-        from google.genai import types
-        client = genai.Client(api_key=api_key)
-
-        cart_text = ""
-        if cart and len(cart) > 0:
-            cart_text = "\n\nตะกร้าสินค้าปัจจุบัน:\n"
-            for item in cart:
-                cart_text += f"- {item.get('name','-')} จำนวน {item.get('qty',0)} ชิ้น ราคา/ชิ้น ฿{item.get('price',0)}\n"
-            cart_text += f"\nยอดรวมตะกร้า: ฿{sum(item.get('price',0)*item.get('qty',0) for item in cart):.2f}"
-
-        prompt = f"""คุณคือผู้ช่วยขาย AI และผู้เชี่ยวชาญด้านอะไหล่ยานยนต์ สำหรับร้านคำเจริญเกษตรยนต์ (KJY)
+    prompt = f"""คุณคือผู้ช่วยขาย AI และผู้เชี่ยวชาญด้านอะไหล่ยานยนต์ สำหรับร้านคำเจริญเกษตรยนต์ (KJY)
 ช่วยตอบคำถามลูกค้า/พนักงานเกี่ยวกับสินค้า สต็อก ราคา และความรู้ด้านอะไหล่ เป็นภาษาไทย
 
 ความรู้เฉพาะด้านอะไหล่:
@@ -1056,16 +1052,16 @@ async def ai_sales_assistant(payload: dict):
 ถ้าเป็นคำถามคำนวณ ให้คำนวณและแสดงผลลัพธ์
 ถ้าไม่รู้จักสินค้า ให้บอกว่าไม่มีข้อมูลและแนะนำให้เช็คกับพนักงาน"""
 
-        response = client.models.generate_content(
-            model="gemini-flash-latest",
-            contents=[prompt],
-        )
-        reply = response.text.strip()
-        return {"reply": reply}
+    # Multi-Key + Multi-Model fallback (primary gemini-3.6-flash -> backup gemini-3.5-flash)
+    reply = _gemini_generate(
+        [prompt],
+        primary_model="gemini-3.6-flash",
+        backup_model="gemini-3.5-flash"
+    )
+    if reply:
+        return {"reply": reply.strip()}
 
-    except Exception as e:
-        print(f"AI sales assistant error: {e}")
-        return {"reply": f"ขออภัย เกิดข้อผิดพลาด: {str(e)}"}
+    return {"reply": "ขออภัย เกิดข้อผิดพลาด: ไม่สามารถติดต่อ AI ได้ (ทุก API Key ล้มเหลว)"}
 
 
 # ============================================================

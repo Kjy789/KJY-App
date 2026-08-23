@@ -1863,8 +1863,8 @@ body {
     .row-3 { grid-template-columns: 1fr 1fr; }
     .presets { grid-template-columns: repeat(3, 1fr); }
     .toast { bottom: calc(var(--bottom-h) + 12px); }
-    .sales-fab { left: 14px; bottom: 88px; }
-    .sales-assistant-widget { left: 14px; bottom: 152px; width: min(360px, calc(100vw - 28px)); }
+    .sales-fab { right: 12px; left: auto; bottom: 88px; }
+    .sales-assistant-widget { right: 12px; left: auto; bottom: 152px; width: min(360px, calc(100vw - 28px)); }
 }
 
 @media (max-width: 480px) {
@@ -2184,10 +2184,30 @@ input, select, textarea {
     grid-template-columns: var(--sidebar-w) 1fr var(--cart-w) !important;
 }
 
-/* Fix floating widgets that used expanded width — keep them at collapsed offset */
+/* ============ SALES ASSISTANT - LOCKED Bottom-Right (ห้ามย้ายฝั่ง) ============ */
 .sales-fab,
 .sales-assistant-widget {
-    left: calc(var(--sidebar-w) + 16px) !important;
+    position: fixed !important;
+    right: 20px !important;
+    left: auto !important;
+    top: auto !important;
+    transform: none !important;
+}
+.sales-fab {
+    bottom: 20px !important;
+}
+.sales-assistant-widget {
+    bottom: 80px !important;
+    cursor: default !important;
+}
+.sales-assistant-widget .assistant-header {
+    cursor: default !important;
+    user-select: auto !important;
+    -webkit-user-select: auto !important;
+}
+.sales-assistant-widget.dragging {
+    cursor: default !important;
+    opacity: 1 !important;
 }
 
 /* Keep legacy mobile hide behavior for phones */
@@ -2318,10 +2338,30 @@ input, select, textarea {
     grid-template-columns: var(--sidebar-w) 1fr var(--cart-w) !important;
 }
 
-/* Fix floating widgets that used expanded width — keep them at collapsed offset */
+/* ============ SALES ASSISTANT - LOCKED Bottom-Right (ห้ามย้ายฝั่ง) ============ */
 .sales-fab,
 .sales-assistant-widget {
-    left: calc(var(--sidebar-w) + 16px) !important;
+    position: fixed !important;
+    right: 20px !important;
+    left: auto !important;
+    top: auto !important;
+    transform: none !important;
+}
+.sales-fab {
+    bottom: 20px !important;
+}
+.sales-assistant-widget {
+    bottom: 80px !important;
+    cursor: default !important;
+}
+.sales-assistant-widget .assistant-header {
+    cursor: default !important;
+    user-select: auto !important;
+    -webkit-user-select: auto !important;
+}
+.sales-assistant-widget.dragging {
+    cursor: default !important;
+    opacity: 1 !important;
 }
 
 /* Keep legacy mobile hide behavior for phones */

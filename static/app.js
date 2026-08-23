@@ -1259,9 +1259,10 @@ function closeScanner() {
 
 function handleBarcodeResult(value, ctx) {
     if (ctx === 'pos') {
+        // POS: สแกนบาร์โค้ดแล้วดึงสินค้านั้นเข้าตะกร้า (Cart) ทันที
         var input = document.getElementById('pos-search');
-        if (input) { input.value = value; debounceSearch('pos'); }
-        showToast('สแกน: ' + value, 'success');
+        if (input) { input.value = value; }
+        addProductByBarcode(value);
     } else if (ctx === 'stock') {
         var input = document.getElementById('stock-search');
         if (input) { input.value = value; debounceSearch('stock'); }
@@ -1270,6 +1271,39 @@ function handleBarcodeResult(value, ctx) {
         var skuInput = document.getElementById('a-sku');
         if (skuInput) skuInput.value = value;
         showToast('สแกน SKU: ' + value, 'success');
+    }
+}
+
+// ค้นหาสินค้าจากบาร์โค้ด/SKU แล้วเพิ่มเข้าตะกร้าทันที (ใช้ในหน้า POS)
+async function addProductByBarcode(barcode) {
+    if (!barcode) return;
+    try {
+        var res = await fetch('/api/staff/products?keyword=' + encodeURIComponent(barcode));
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var products = await res.json();
+        if (!products || products.length === 0) {
+            showToast('ไม่พบสินค้าที่มีบาร์โค้ด: ' + barcode, 'error');
+            return;
+        }
+        // เลือกสินค้าตัวแรกที่ตรงกับ SKU/Barcode เป๊ะๆ ก่อน ถ้าไม่มีค่อยใช้ตัวแรก
+        var match = null;
+        for (var i = 0; i < products.length; i++) {
+            if (products[i].sku && String(products[i].sku).trim() === String(barcode).trim()) {
+                match = products[i];
+                break;
+            }
+        }
+        if (!match) match = products[0];
+        var stock = parseInt(match.stock_qty) || 0;
+        if (stock <= 0) {
+            showToast('สินค้า "' + (match.name || '') + '" หมดสต็อก', 'error');
+            return;
+        }
+        addToCart(match.id, match.name, parseFloat(match.sale_price) || 0, stock, match.image_path || match.image_url || '');
+        showToast('✅ สแกนแล้ว: ' + (match.name || '') + ' เข้าตะกร้า', 'success');
+    } catch (err) {
+        console.error('Barcode add to cart error:', err);
+        showToast('ไม่พบสินค้าบาร์โค้ด: ' + barcode, 'error');
     }
 }
 
@@ -2579,61 +2613,6 @@ loadOwnerReports = function(keyword) {
         .catch(function() {});
 };
 
-
-// ==========================================================================
-// SALES ASSISTANT DRAG & DROP (Touch + Mouse)
-// ==========================================================================
-
-(function() {
-    var widget = document.getElementById('sales-assistant-widget');
-    if (!widget) return;
-
-    var isDragging = false;
-    var startX = 0, startY = 0;
-    var origLeft = 0, origTop = 0;
-
-    widget.addEventListener('pointerdown', function(e) {
-        // Only start drag when clicking on header (not input/button/send)
-        if (e.target.closest('.assistant-input') || e.target.closest('.assistant-send') || e.target.closest('.assistant-close')) return;
-        isDragging = true;
-        startX = e.clientX;
-        startY = e.clientY;
-        origLeft = widget.offsetLeft;
-        origTop = widget.offsetTop;
-        widget.classList.add('dragging');
-        widget.setPointerCapture(e.pointerId);
-        e.preventDefault();
-    });
-
-    widget.addEventListener('pointermove', function(e) {
-        if (!isDragging) return;
-        var dx = e.clientX - startX;
-        var dy = e.clientY - startY;
-        var newLeft = origLeft + dx;
-        var newTop = origTop + dy;
-
-        // Clamp to viewport
-        var vw = window.innerWidth;
-        var vh = window.innerHeight;
-        var w = widget.offsetWidth;
-        var h = widget.offsetHeight;
-        newLeft = Math.max(0, Math.min(vw - w, newLeft));
-        newTop = Math.max(0, Math.min(vh - h, newTop));
-
-        widget.style.left = newLeft + 'px';
-        widget.style.top = newTop + 'px';
-        widget.style.transform = 'none';
-    });
-
-    function endDrag(e) {
-        if (!isDragging) return;
-        isDragging = false;
-        widget.classList.remove('dragging');
-    }
-
-    widget.addEventListener('pointerup', endDrag);
-    widget.addEventListener('pointercancel', endDrag);
-})();
 
 // ==========================================================================
 // LOCATION AUTO-SUGGEST (Datalist loader)

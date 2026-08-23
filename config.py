@@ -53,3 +53,15 @@ if not GEMINI_API_KEY:
                 GEMINI_API_KEY = f.read().strip()
         except Exception:
             pass
+
+
+# GEMINI BACKUP API KEY
+GEMINI_API_KEY_BACKUP = os.getenv("GEMINI_API_KEY_BACKUP", "").strip()
+if not GEMINI_API_KEY_BACKUP:
+    p = os.path.join(BASE_DIR, "api_backup.txt")
+    if os.path.exists(p):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                GEMINI_API_KEY_BACKUP = f.read().strip()
+        except Exception:
+            pass
