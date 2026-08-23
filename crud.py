@@ -363,7 +363,7 @@ def update_product_staff(product_id: int, **fields):
     แก้ไขข้อมูลสินค้า
     - Staff: ไม่อนุญาตให้แก้ไข cost_price
     - Owner: แก้ไข cost_price ได้ (ผ่าน allow_cost_price=True)
-    - ค่ารวมถึง '' (ค่าว่าง) จะถูกอัปเดตจริง — เมื่อผู้ใช้ลบข้อความแล้วกดบันทึก ค่าใน DB จะถูกลบออกด้วย
+    - ค่ารวมถึง '' (ค่าว่าง) จะถูกอัปเดตจริง — เมื่อผู้ใช้ลบข้อความแล้วกดบันทึก ค่าใน DB จะถูกลบออก (เซ็ตเป็น NULL) ด้วย
     """
     # ถ้าไม่มีการส่ง allow_cost_price=True จะกรอง cost_price ออก
     allow_cost_price = fields.pop("allow_cost_price", False)
@@ -375,24 +375,34 @@ def update_product_staff(product_id: int, **fields):
         "front_stock", "warehouse_stock"
     }
 
-    # ฟิลด์ข้อความที่สามารถเป็นค่าว่างได้ — เมื่อผู้ใช้ลบข้อความ
+    # ฟิลด์ข้อความและรูปภาพที่สามารถเป็นค่าว่างได้ — เมื่อผู้ใช้ลบข้อความ
     # จะแปลงค่าว่าง "" ให้เป็น None (NULL) ในฐานข้อมูล
-    TEXT_FIELDS_NULLABLE = {"sku", "category", "location_code", "location", "description"}
+    TEXT_FIELDS_NULLABLE = {
+        "sku", "category", "location_code", "location", "description",
+        "image_path", "location_image_path"
+    }
 
     filtered_fields = {}
     for k, v in fields.items():
         if k not in allowed_keys:
             continue
-        # ยอมรับค่าว่าง "" (ผู้ใช้ลบข้อความแล้วกดบันทึก)
+        if k == "name":
+            # ชื่อสินค้าเป็นฟิลด์บังคับ ไม่ให้เซ็ตเป็นค่าว่างหรือ NULL
+            if isinstance(v, str) and v.strip():
+                filtered_fields["name"] = v.strip()
+            continue
+
         if isinstance(v, str):
-            # แปลงค่าว่าง "" -> None (NULL) สำหรับฟิลด์ข้อความที่อนุญาต
+            # แปลงค่าว่าง "" หรือช่องว่างล้วน -> None (NULL) สำหรับฟิลด์ที่อนุญาต
             if k in TEXT_FIELDS_NULLABLE and v.strip() == "":
                 filtered_fields[k] = None
+            elif k in TEXT_FIELDS_NULLABLE:
+                filtered_fields[k] = v.strip()
             else:
                 filtered_fields[k] = v
         elif v is None:
-            # ค่า None (ไม่ส่ง field มา) — ไม่แตะคอลัมน์นี้
-            continue
+            if k in TEXT_FIELDS_NULLABLE:
+                filtered_fields[k] = None
         else:
             filtered_fields[k] = v
 
