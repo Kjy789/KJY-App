@@ -2216,7 +2216,6 @@ input, select, textarea {
     .sidebar-toggle { display: none; }
 }
 
-
 /* ============================================================
    SIDEBAR FIX — Hover-to-Expand overlay + Touch support
    (overrides earlier sidebar rules; appended last = wins cascade)
@@ -2362,6 +2361,54 @@ input, select, textarea {
 .sales-assistant-widget.dragging {
     cursor: default !important;
     opacity: 1 !important;
+}
+
+/* ============================================================
+   SIDEBAR BRAND — Horizontal Logo + Label (Collapsed / Hover)
+   โลโก้ + ข้อความ "KJY WAREHOUSE" อยู่ในแนวนอนเดียวกัน
+   Collapsed: เห็นเฉพาะโลโก้ตรงกลาง / Hover: แสดงข้อความ fade-in
+   (วางไว้ท้ายสุด ชนะ cascade ทั้งหมด)
+   ============================================================ */
+.sidebar-brand {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 10px !important;
+    width: 100% !important;
+}
+
+.sidebar .sb-label {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    white-space: nowrap !important;
+    font-size: 11px !important;
+    letter-spacing: 0.1em !important;
+    transition: opacity 0.3s ease, visibility 0.3s ease !important;
+}
+
+.sidebar:hover .sidebar-brand,
+.sidebar.expanded .sidebar-brand {
+    flex-direction: row !important;
+    justify-content: flex-start !important;
+    padding-left: 4px !important;
+}
+
+.sidebar:hover .sidebar .sb-label,
+.sidebar.expanded .sidebar .sb-label,
+.sidebar:hover .sb-label,
+.sidebar.expanded .sb-label {
+    display: inline-flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    max-width: 220px !important;
+    animation: sidebarLabelFadeIn 0.3s ease forwards !important;
+}
+
+@keyframes sidebarLabelFadeIn {
+    from { opacity: 0; transform: translateX(6px); }
+    to { opacity: 1; transform: translateX(0); }
 }
 
 /* Keep legacy mobile hide behavior for phones */
