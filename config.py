@@ -29,7 +29,11 @@ elif SUPABASE_URL.endswith("/rest/v1"):
 SUPABASE_URL = SUPABASE_URL.rstrip("/")
 
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip() # Anon Key
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+# รองรับทั้ง SUPABASE_SERVICE_ROLE_KEY และ SUPABASE_SECRET_KEY (ชื่อ env ที่ Supabase dashboard ให้มา)
+SUPABASE_SERVICE_ROLE_KEY = (
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    or os.getenv("SUPABASE_SECRET_KEY", "").strip()
+)
 
 # LOCAL FALLBACK DATABASE PATH
 DB_PATH = os.path.join(BASE_DIR, "kjy_inventory.db")

@@ -423,7 +423,8 @@ def update_product_staff(product_id: int, **fields):
         try:
             sp_payload = {}
             # ฟิลด์ข้อความที่ Supabase อาจมี NOT NULL constraint — ส่ง "" แทน None เสมอ
-            TEXT_FIELDS_NOTNULL = {"description", "location", "location_code", "sku", "category"}
+            # หมายเหตุ: sku ไม่รวมในนี้เพราะเป็น UNIQUE column — ถ้าหลายสินค้า sku="" จะชน constraint
+            TEXT_FIELDS_NOTNULL = {"description", "location", "location_code", "category"}
             for k, v in filtered_fields.items():
                 if k == "image_path":
                     sp_payload["image_url"] = v if v is not None else ""
@@ -439,9 +440,14 @@ def update_product_staff(product_id: int, **fields):
             safe_payload = {k: v for k, v in sp_payload.items() if k in allowed_cols}
             logger.info(f"[SUPABASE] Updating product id={product_id} payload: {safe_payload}")
             res = supabase_admin.from_("products").update(safe_payload).eq("id", product_id).execute()
-            logger.info(f"[SUPABASE] Update success for id={product_id}, response data: {res.data}")
-            add_audit_log("แก้ไขสินค้า", f"แก้ไขสินค้า id={product_id}: {', '.join(filtered_fields.keys())}", "staff")
-            return
+            if res.data:
+                logger.info(f"[SUPABASE] Update success for id={product_id}, updated fields: {list(safe_payload.keys())}")
+                add_audit_log("แก้ไขสินค้า", f"แก้ไขสินค้า id={product_id}: {', '.join(filtered_fields.keys())}", "staff")
+                return
+            else:
+                # Supabase updated 0 rows — อาจเกิดจาก RLS, product_id ไม่มี, หรือ service role key ผิด
+                logger.warning(f"[SUPABASE] Update returned 0 rows for id={product_id}. Check RLS policies or service role key. Payload was: {safe_payload}")
+                raise Exception(f"Supabase update 0 rows for id={product_id} — RLS อาจบล็อก หรือ SUPABASE_SERVICE_ROLE_KEY ไม่ถูกต้อง")
         except Exception as e:
             import traceback
             logger.error(f"[SUPABASE] Update FAILED for product id={product_id}: {e}")
