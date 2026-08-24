@@ -369,15 +369,16 @@
 <div class="modal-overlay hidden" id="modal-scan">
     <div class="modal small">
         <div class="modal-head"><h3><i class="fa-solid fa-barcode"></i> สแกนบาร์โค้ด</h3><button class="close" onclick="closeScanner()">&times;</button></div>
-        <div class="modal-body">
-            <div id="reader" class="reader"></div>
-            <p class="hint">จ่อกล้องที่บาร์โค้ดสินค้า</p>
-            <div style="margin-top:12px;display:flex;gap:8px;justify-content:center">
-                <button type="button" class="btn-outline" onclick="document.getElementById('barcode-file-input').click()" style="font-size:13px;padding:8px 14px">
-                    <i class="fa-solid fa-camera"></i> ถ่ายรูป / เลือกรูปบาร์โค้ด
+        <div class="modal-body" style="overflow-y:auto;padding:12px 16px">
+            <!-- ปุ่มถ่ายรูปอยู่บนสุดเสมอ ไม่โดน reader บัง -->
+            <div style="margin-bottom:10px;display:flex;gap:8px;justify-content:center">
+                <button type="button" class="btn-outline" onclick="document.getElementById('barcode-file-input').click()" style="font-size:13px;padding:8px 16px;width:100%">
+                    <i class="fa-solid fa-camera"></i> 📷 ถ่ายรูปบาร์โค้ด / เลือกรูปจากคลัง
                 </button>
                 <input type="file" id="barcode-file-input" accept="image/*" capture="environment" class="hidden" onchange="scanBarcodeFromImage(event)">
             </div>
+            <div id="reader" class="reader"></div>
+            <p class="hint" style="text-align:center;margin-top:8px">หรือจ่อกล้องที่บาร์โค้ดสินค้าด้านล่าง</p>
         </div>
     </div>
 </div>

@@ -422,13 +422,15 @@ def update_product_staff(product_id: int, **fields):
     if supabase_admin:
         try:
             sp_payload = {}
+            # ฟิลด์ข้อความที่ Supabase อาจมี NOT NULL constraint — ส่ง "" แทน None เสมอ
+            TEXT_FIELDS_NOTNULL = {"description", "location", "location_code", "sku", "category"}
             for k, v in filtered_fields.items():
                 if k == "image_path":
-                    sp_payload["image_url"] = v
+                    sp_payload["image_url"] = v if v is not None else ""
                 elif k == "location_image_path":
-                    sp_payload["location_image_url"] = v
-                elif k in ("description", "location") and v is None:
-                    # ป้องกันกรณี Supabase column มี NOT NULL constraint
+                    sp_payload["location_image_url"] = v if v is not None else ""
+                elif v is None and k in TEXT_FIELDS_NOTNULL:
+                    # ผู้ใช้ลบข้อความ → ส่งค่าว่าง "" ไม่ส่ง NULL เพราะ Supabase มี NOT NULL
                     sp_payload[k] = ""
                 else:
                     sp_payload[k] = v
