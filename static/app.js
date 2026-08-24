@@ -950,10 +950,7 @@ async function aiScanProductImage(file) {
             var catField = document.getElementById('a-cat');
             if (catField && !catField.value) catField.value = data.category;
         }
-        if (data.description && data.description.trim()) {
-            var descField = document.getElementById('a-desc');
-            if (descField && !descField.value) descField.value = data.description;
-        }
+        // ข้อ 3: ไม่กรอกรายละเอียดอัตโนมัติ ให้ผู้ใช้เป็นคนกดเองหรือพิมพ์เอง
         if (data.suggested_location) {
             var locField = document.getElementById('a-loc');
             if (locField && !locField.value) locField.value = data.suggested_location;
@@ -1145,6 +1142,28 @@ function openLocationModal(imgUrl, productName, locationCode) {
 // BARCODE SCANNER
 // ==========================================================================
 
+// ==========================================================================
+// BARCODE SCANNER & SCANNER GUN SUPPORT (กล้องมือถือ / ถ่ายรูปบาร์โค้ด / เครื่องยิง USB/Bluetooth)
+// ==========================================================================
+
+function playScanBeep() {
+    try {
+        var AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        var audioCtx = new AudioCtx();
+        var osc = audioCtx.createOscillator();
+        var gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1760, audioCtx.currentTime); // Note A6 beep
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.12);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.12);
+    } catch (e) {}
+}
+
 function openScanner(ctx) {
     barcodeScannerCtx = ctx;
     openModal('modal-scan');
@@ -1155,98 +1174,106 @@ function openScanner(ctx) {
         return;
     }
 
-    html5QrcodeScanner = new Html5Qrcode('reader');
-    // ร้องขอสิทธิ์กล้อง + ใช้กล้องหลัง (environment) ตามข้อกำหนด
-    html5QrcodeScanner.start(
-        // facingMode: 'environment' = กล้องหลัง
-        // fallback constraints เผื่ออุปกรณ์ไม่รองรับ facingMode
-        { facingMode: 'environment' },
-        { fps: 12, qrbox: { width: 260, height: 160 }, aspectRatio: 1.0 },
-        function(decoded) {
-            closeScanner();
-            handleBarcodeResult(decoded, ctx);
-        },
-        function() {}
-    ).catch(function(err) {
-        console.error('Camera error:', err);
-        // Fallback 1: ลองขอสิทธิ์กล้องกึ่งกลาง (ไม่ระบุ facingMode) เผื่อกล้องหลังถูกบล็อก
+    if (html5QrcodeScanner) {
         try {
-            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'environment' },
-                    audio: false
-                }).then(function(stream) {
-                    stream.getTracks().forEach(function(t) { t.stop(); });
-                    // ได้สิทธิ์กล้องแล้ว ลองสแกนใหม่
-                    showToast('ขอสิทธิ์กล้องสำเร็จ ลองสแกนใหม่', 'success');
-                    setTimeout(function() { openScanner(ctx); }, 500);
-                }).catch(function(permErr) {
-                    console.error('Permission denied:', permErr);
-                    closeScanner();
-                    enableScannerGunMode();
-                    showToast('ไม่สามารถเปิดกล้องได้: ' + (permErr.name || '') + ' — เปิดโหมดพิมพ์บาร์โค้ดจากเครื่องสแกน USB/Bluetooth แทน', 'error');
-                });
-            } else {
-                closeScanner();
-                enableScannerGunMode();
-                showToast('อุปกรณ์นี้ไม่รองรับกล้องสแกน — เปิดโหมดพิมพ์บาร์โค้ดจากเครื่องสแกนแทน', 'error');
-            }
+            html5QrcodeScanner.stop().then(function() {
+                html5QrcodeScanner.clear();
+                html5QrcodeScanner = null;
+                startHtml5Qrcode(ctx);
+            }).catch(function() {
+                html5QrcodeScanner = null;
+                startHtml5Qrcode(ctx);
+            });
+            return;
         } catch (e) {
-            closeScanner();
-            enableScannerGunMode();
-            showToast('ไม่สามารถเปิดกล้องได้ — เปิดโหมดพิมพ์บาร์โค้ดแทน', 'error');
+            html5QrcodeScanner = null;
         }
+    }
+    startHtml5Qrcode(ctx);
+}
+
+function startHtml5Qrcode(ctx) {
+    var readerEl = document.getElementById('reader');
+    if (!readerEl) return;
+    readerEl.innerHTML = '';
+
+    html5QrcodeScanner = new Html5Qrcode('reader');
+
+    var scanConfig = {
+        fps: 15,
+        qrbox: function(w, h) {
+            var minEdge = Math.min(w, h);
+            return {
+                width: Math.floor(minEdge * 0.85),
+                height: Math.floor(minEdge * 0.55)
+            };
+        },
+        aspectRatio: 1.0
+    };
+
+    var onScanSuccess = function(decodedText) {
+        playScanBeep();
+        closeScanner();
+        handleBarcodeResult(decodedText, ctx);
+    };
+
+    // ตรวจสอบกล้องทั้งหมดก่อนเพื่อเลือกกล้องหลัง (Environment/Back camera)
+    Html5Qrcode.getCameras().then(function(devices) {
+        var chosenCamera = null;
+        if (devices && devices.length > 0) {
+            // เลือกกล้องหลังถ้ามี
+            var backCam = devices.find(function(d) {
+                return /back|rear|environment|main|facing\s*back|isrear/i.test(d.label || '');
+            });
+            chosenCamera = backCam ? backCam.id : devices[devices.length - 1].id;
+        }
+
+        var cameraParam = chosenCamera ? chosenCamera : { facingMode: 'environment' };
+
+        html5QrcodeScanner.start(cameraParam, scanConfig, onScanSuccess, function() {})
+            .catch(function(err) {
+                console.warn('Camera start with device ID failed, trying facingMode environment:', err);
+                html5QrcodeScanner.start({ facingMode: 'environment' }, scanConfig, onScanSuccess, function() {})
+                    .catch(function(err2) {
+                        console.error('All camera start attempts failed:', err2);
+                        showToast('ไม่สามารถเปิดกล้องได้: ' + (err2.name || err2.message || 'กรุณาลองกดปุ่มถ่ายรูปบาร์โค้ด'), 'error');
+                    });
+            });
+    }).catch(function(err) {
+        console.warn('getCameras failed, trying direct facingMode:', err);
+        html5QrcodeScanner.start({ facingMode: 'environment' }, scanConfig, onScanSuccess, function() {})
+            .catch(function(directErr) {
+                console.error('Direct camera start failed:', directErr);
+                showToast('กรุณาอนุญาตให้เข้าถึงกล้อง หรือแตะปุ่ม "ถ่ายรูป / เลือกรูปบาร์โค้ด"', 'error');
+            });
     });
 }
 
-// ==========================================================================
-// SCANNER GUN MODE (USB / Bluetooth HID) — ฟัง keypress พิมพ์รับค่าบาร์โค้ด
-// ==========================================================================
-let scannerGunActive = false;
-let scannerGunBuffer = '';
-let scannerGunTimer = null;
+// ฟังก์ชันสแกนบาร์โค้ดจากรูปถ่าย / อัปโหลดรูปภาพ
+function scanBarcodeFromImage(event) {
+    var file = event.target.files[0];
+    if (!file) return;
 
-function enableScannerGunMode() {
-    scannerGunActive = true;
-    scannerGunBuffer = '';
-    showToast('📷 โหมดสแกนเนอร์: พิมพ์/กรอกบาร์โค้ดแล้วกด Enter หรือรอ 100ms', 'success');
-}
-
-function disableScannerGunMode() {
-    scannerGunActive = false;
-    scannerGunBuffer = '';
-}
-
-// ฟัง keypress ทั่วหน้าเว็บ — เครื่องสแกน USB/Bluetooth จะพิมพ์ทีละตัวแล้ว Enter
-document.addEventListener('keydown', function(e) {
-    if (!scannerGunActive) return;
-    // ตัวพิมพ์/ตัวเลขจากเครื่องสแกน
-    if (e.key && e.key.length === 1) {
-        scannerGunBuffer += e.key;
-        // ป้องกันตัวเลขไปกวน input ที่ focus อยู่
-        var focused = document.activeElement;
-        if (focused && focused.tagName === 'INPUT') {
-            // เครื่องสแกนพิมพ์เร็วมาก (ทุกตัว < 100ms) - ถือว่าเป็นสแกน
-            clearTimeout(scannerGunTimer);
-            scannerGunTimer = setTimeout(function() {
-                if (scannerGunBuffer.length >= 3) {
-                    var barcode = scannerGunBuffer;
-                    scannerGunBuffer = '';
-                    handleBarcodeResult(barcode, barcodeScannerCtx);
-                }
-            }, 100);
-        }
-    } else if (e.key === 'Enter') {
-        // เครื่องสแกนหลายรุ่นปิดท้ายด้วย Enter
-        if (scannerGunBuffer.length >= 3) {
-            var barcode = scannerGunBuffer;
-            scannerGunBuffer = '';
-            e.preventDefault();
-            e.stopPropagation();
-            handleBarcodeResult(barcode, barcodeScannerCtx);
-        }
+    if (!html5QrcodeScanner) {
+        html5QrcodeScanner = new Html5Qrcode('reader');
     }
-});
+
+    showToast('กำลังอ่านบาร์โค้ดจากรูป...', 'success');
+    html5QrcodeScanner.scanFile(file, true)
+        .then(function(decodedText) {
+            playScanBeep();
+            closeScanner();
+            handleBarcodeResult(decodedText, barcodeScannerCtx);
+            showToast('✅ อ่านบาร์โค้ดสำเร็จ: ' + decodedText, 'success');
+        })
+        .catch(function(err) {
+            console.error('scanFile error:', err);
+            showToast('❌ ไม่พบบาร์โค้ดในรูปภาพ กรุณาลองถ่ายใหม่อีกครั้งให้ชัดเจนขึ้น', 'error');
+        })
+        .finally(function() {
+            event.target.value = '';
+        });
+}
 
 function closeScanner() {
     if (html5QrcodeScanner) {
@@ -1258,37 +1285,49 @@ function closeScanner() {
 }
 
 function handleBarcodeResult(value, ctx) {
+    if (!value) return;
+    var cleanVal = String(value).trim();
+    if (!cleanVal) return;
+
     if (ctx === 'pos') {
         // POS: สแกนบาร์โค้ดแล้วดึงสินค้านั้นเข้าตะกร้า (Cart) ทันที
         var input = document.getElementById('pos-search');
-        if (input) { input.value = value; }
-        addProductByBarcode(value);
+        if (input) { input.value = cleanVal; }
+        addProductByBarcode(cleanVal);
     } else if (ctx === 'stock') {
         var input = document.getElementById('stock-search');
-        if (input) { input.value = value; debounceSearch('stock'); }
-        showToast('สแกน: ' + value, 'success');
+        if (input) { input.value = cleanVal; debounceSearch('stock'); }
+        showToast('สแกน: ' + cleanVal, 'success');
     } else if (ctx === 'sku') {
-        var skuInput = document.getElementById('a-sku');
-        if (skuInput) skuInput.value = value;
-        showToast('สแกน SKU: ' + value, 'success');
+        // อัปเดตช่อง SKU ของ modal ที่เปิดอยู่ (Add หรือ Edit)
+        var editModal = document.getElementById('modal-edit');
+        if (editModal && !editModal.classList.contains('hidden')) {
+            var eSku = document.getElementById('e-sku');
+            if (eSku) eSku.value = cleanVal;
+        } else {
+            var aSku = document.getElementById('a-sku');
+            if (aSku) aSku.value = cleanVal;
+        }
+        showToast('สแกน SKU: ' + cleanVal, 'success');
     }
 }
 
 // ค้นหาสินค้าจากบาร์โค้ด/SKU แล้วเพิ่มเข้าตะกร้าทันที (ใช้ในหน้า POS)
 async function addProductByBarcode(barcode) {
     if (!barcode) return;
+    var cleanBarcode = String(barcode).trim();
     try {
-        var res = await fetch('/api/staff/products?keyword=' + encodeURIComponent(barcode));
+        var res = await fetch('/api/staff/products?keyword=' + encodeURIComponent(cleanBarcode));
         if (!res.ok) throw new Error('HTTP ' + res.status);
         var products = await res.json();
         if (!products || products.length === 0) {
-            showToast('ไม่พบสินค้าที่มีบาร์โค้ด: ' + barcode, 'error');
+            showToast('❌ ไม่พบสินค้าที่มีบาร์โค้ด/SKU: ' + cleanBarcode, 'error');
             return;
         }
         // เลือกสินค้าตัวแรกที่ตรงกับ SKU/Barcode เป๊ะๆ ก่อน ถ้าไม่มีค่อยใช้ตัวแรก
         var match = null;
         for (var i = 0; i < products.length; i++) {
-            if (products[i].sku && String(products[i].sku).trim() === String(barcode).trim()) {
+            if (products[i].sku && String(products[i].sku).trim().toLowerCase() === cleanBarcode.toLowerCase()) {
                 match = products[i];
                 break;
             }
@@ -1296,16 +1335,72 @@ async function addProductByBarcode(barcode) {
         if (!match) match = products[0];
         var stock = parseInt(match.stock_qty) || 0;
         if (stock <= 0) {
-            showToast('สินค้า "' + (match.name || '') + '" หมดสต็อก', 'error');
+            showToast('⚠️ สินค้า "' + (match.name || '') + '" หมดสต็อก', 'error');
             return;
         }
+        playScanBeep();
         addToCart(match.id, match.name, parseFloat(match.sale_price) || 0, stock, match.image_path || match.image_url || '');
-        showToast('✅ สแกนแล้ว: ' + (match.name || '') + ' เข้าตะกร้า', 'success');
+        showToast('✅ สแกนเจอ: "' + (match.name || '') + '" เพิ่มลงตะกร้าแล้ว', 'success');
     } catch (err) {
         console.error('Barcode add to cart error:', err);
-        showToast('ไม่พบสินค้าบาร์โค้ด: ' + barcode, 'error');
+        showToast('ไม่พบสินค้าบาร์โค้ด: ' + cleanBarcode, 'error');
     }
 }
+
+// ==========================================================================
+// HARDWARE SCANNER GUN (เครื่องยิงบาร์โค้ด USB / Bluetooth HID) + ENTER KEY
+// ==========================================================================
+let hwScannerBuffer = '';
+let hwScannerLastTime = 0;
+
+document.addEventListener('keydown', function(e) {
+    var now = new Date().getTime();
+    var activeTag = document.activeElement ? document.activeElement.tagName : '';
+    var activeId = document.activeElement ? document.activeElement.id : '';
+
+    // ถ้ากด Enter ในช่องค้นหาหน้าขาย (pos-search) ให้ค้นหาและเพิ่มลงตะกร้าทันที
+    if (e.key === 'Enter' && activeId === 'pos-search') {
+        e.preventDefault();
+        var val = document.getElementById('pos-search').value.trim();
+        if (val) {
+            addProductByBarcode(val);
+        }
+        return;
+    }
+
+    // สำหรับเครื่องยิงบาร์โค้ด (ส่งตัวอักษรเร็วมาก < 50ms แล้วตบท้ายด้วย Enter)
+    if (e.key === 'Enter') {
+        if (hwScannerBuffer.length >= 3 && (now - hwScannerLastTime < 120)) {
+            var barcode = hwScannerBuffer.trim();
+            hwScannerBuffer = '';
+            if (barcode) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (currentView === 'pos') {
+                    var posInput = document.getElementById('pos-search');
+                    if (posInput) posInput.value = barcode;
+                    addProductByBarcode(barcode);
+                } else if (currentView === 'stock') {
+                    var stockInput = document.getElementById('stock-search');
+                    if (stockInput) { stockInput.value = barcode; debounceSearch('stock'); }
+                } else {
+                    handleBarcodeResult(barcode, barcodeScannerCtx || 'pos');
+                }
+            }
+        }
+        hwScannerBuffer = '';
+        return;
+    }
+
+    if (e.key && e.key.length === 1) {
+        // ถ้าเวลาห่างกันเกิน 60ms แปลว่าพิมพ์ด้วยมือธรรมดา ให้เคลียร์ buffer
+        if (now - hwScannerLastTime > 60) {
+            hwScannerBuffer = '';
+        }
+        hwScannerBuffer += e.key;
+        hwScannerLastTime = now;
+    }
+});
 
 // ==========================================================================
 // OWNER: BILL OCR UPLOAD
@@ -1776,6 +1871,13 @@ async function submitEdit(event) {
         showToast('กรุณากรอกชื่อสินค้า', 'error');
         return;
     }
+
+    // กำหนดค่า default ปลอดภัยเมื่อผู้ใช้ลบตัวเลขในช่องจนว่างเปล่า
+    if (!price || isNaN(parseFloat(price))) price = '0';
+    if (!stock || isNaN(parseInt(stock))) stock = '0';
+    if (!minStock || isNaN(parseInt(minStock))) minStock = '5';
+    if (!frontStock || isNaN(parseInt(frontStock))) frontStock = '0';
+    if (!warehouseStock || isNaN(parseInt(warehouseStock))) warehouseStock = '0';
 
     var submitBtn = document.getElementById('btn-edit-submit');
     submitBtn.disabled = true;

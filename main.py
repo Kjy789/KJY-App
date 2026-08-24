@@ -428,12 +428,12 @@ async def update_product_staff_route(
     product_id: int,
     name: str = Form(None),
     category: str = Form(None),
-    sale_price: float = Form(None),
-    cost_price: float = Form(None),
-    stock_qty: int = Form(None),
-    front_stock: int = Form(None),
-    warehouse_stock: int = Form(None),
-    min_stock: int = Form(None),
+    sale_price: str = Form(None),
+    cost_price: str = Form(None),
+    stock_qty: str = Form(None),
+    front_stock: str = Form(None),
+    warehouse_stock: str = Form(None),
+    min_stock: str = Form(None),
     location_code: str = Form(None),
     location: str = Form(None),
     description: str = Form(None),
@@ -447,30 +447,64 @@ async def update_product_staff_route(
     แก้ไขข้อมูลสินค้า
     - Staff: ไม่อนุญาตให้แก้ไข cost_price (ถูกกรองใน crud.update_product_staff)
     - Owner: ส่ง cost_price ได้ (ผ่าน allow_cost_price=True)
+    - รองรับค่าว่าง "" ทุกฟิลด์อย่างปลอดภัย ไม่ติด 422 Validation Error
     """
     update_data = {}
-    if name is not None: update_data["name"] = name
-    if category is not None: update_data["category"] = category
-    if sale_price is not None: update_data["sale_price"] = sale_price
-    if stock_qty is not None: update_data["stock_qty"] = stock_qty
-    if front_stock is not None: update_data["front_stock"] = front_stock
-    if warehouse_stock is not None: update_data["warehouse_stock"] = warehouse_stock
-    if min_stock is not None: update_data["min_stock"] = min_stock
-    if location_code is not None: update_data["location_code"] = location_code
-    if location is not None: update_data["location"] = location
-    if description is not None: update_data["description"] = description
-    if sku is not None: update_data["sku"] = sku
+    if name is not None and name.strip():
+        update_data["name"] = name.strip()
+    if category is not None:
+        update_data["category"] = category.strip()
+    if location_code is not None:
+        update_data["location_code"] = location_code.strip()
+    if location is not None:
+        update_data["location"] = location.strip()
+    if description is not None:
+        update_data["description"] = description.strip()
+    if sku is not None:
+        update_data["sku"] = sku.strip()
 
-    # Owner can update cost_price (frontend sends allow_cost_price=true when in owner mode)
-    if cost_price is not None:
-        update_data["cost_price"] = cost_price
-        update_data["allow_cost_price"] = True
+    if sale_price is not None:
+        try:
+            update_data["sale_price"] = float(sale_price) if str(sale_price).strip() else 0.0
+        except (ValueError, TypeError):
+            update_data["sale_price"] = 0.0
+
+    if cost_price is not None and str(cost_price).strip():
+        try:
+            update_data["cost_price"] = float(cost_price)
+            update_data["allow_cost_price"] = True
+        except (ValueError, TypeError):
+            pass
+
+    if stock_qty is not None:
+        try:
+            update_data["stock_qty"] = int(float(stock_qty)) if str(stock_qty).strip() else 0
+        except (ValueError, TypeError):
+            update_data["stock_qty"] = 0
+
+    if front_stock is not None:
+        try:
+            update_data["front_stock"] = int(float(front_stock)) if str(front_stock).strip() else 0
+        except (ValueError, TypeError):
+            update_data["front_stock"] = 0
+
+    if warehouse_stock is not None:
+        try:
+            update_data["warehouse_stock"] = int(float(warehouse_stock)) if str(warehouse_stock).strip() else 0
+        except (ValueError, TypeError):
+            update_data["warehouse_stock"] = 0
+
+    if min_stock is not None:
+        try:
+            update_data["min_stock"] = int(float(min_stock)) if str(min_stock).strip() else 5
+        except (ValueError, TypeError):
+            update_data["min_stock"] = 5
 
     # Accept pre-uploaded image URL
     if image_path is not None:
-        update_data["image_path"] = image_path
+        update_data["image_path"] = image_path.strip()
     if location_image_path is not None:
-        update_data["location_image_path"] = location_image_path
+        update_data["location_image_path"] = location_image_path.strip()
 
     # Also accept direct file upload (overrides pre-uploaded URL)
     if file and file.filename:

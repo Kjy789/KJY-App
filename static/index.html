@@ -369,7 +369,16 @@
 <div class="modal-overlay hidden" id="modal-scan">
     <div class="modal small">
         <div class="modal-head"><h3><i class="fa-solid fa-barcode"></i> สแกนบาร์โค้ด</h3><button class="close" onclick="closeScanner()">&times;</button></div>
-        <div class="modal-body"><div id="reader" class="reader"></div><p class="hint">จ่อกล้องที่บาร์โค้ดสินค้า</p></div>
+        <div class="modal-body">
+            <div id="reader" class="reader"></div>
+            <p class="hint">จ่อกล้องที่บาร์โค้ดสินค้า</p>
+            <div style="margin-top:12px;display:flex;gap:8px;justify-content:center">
+                <button type="button" class="btn-outline" onclick="document.getElementById('barcode-file-input').click()" style="font-size:13px;padding:8px 14px">
+                    <i class="fa-solid fa-camera"></i> ถ่ายรูป / เลือกรูปบาร์โค้ด
+                </button>
+                <input type="file" id="barcode-file-input" accept="image/*" capture="environment" class="hidden" onchange="scanBarcodeFromImage(event)">
+            </div>
+        </div>
     </div>
 </div>
 

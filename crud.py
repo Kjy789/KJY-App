@@ -427,6 +427,9 @@ def update_product_staff(product_id: int, **fields):
                     sp_payload["image_url"] = v
                 elif k == "location_image_path":
                     sp_payload["location_image_url"] = v
+                elif k in ("description", "location") and v is None:
+                    # ป้องกันกรณี Supabase column มี NOT NULL constraint
+                    sp_payload[k] = ""
                 else:
                     sp_payload[k] = v
             # กรองเฉพาะคอลัมน์ที่มีอยู่จริงบน Supabase (รวม migration 002 + 003)

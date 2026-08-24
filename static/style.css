@@ -2337,21 +2337,23 @@ input, select, textarea {
     grid-template-columns: var(--sidebar-w) 1fr var(--cart-w) !important;
 }
 
-/* ============ SALES ASSISTANT - LOCKED Bottom-Right (ห้ามย้ายฝั่ง) ============ */
+/* ============ SALES ASSISTANT - LEFT SIDE (ผู้ช่วยขาย AI สลับมาฝั่งซ้าย) ============ */
 .sales-fab,
 .sales-assistant-widget {
     position: fixed !important;
-    right: 20px !important;
-    left: auto !important;
+    left: calc(var(--sidebar-w) + 16px) !important;
+    right: auto !important;
     top: auto !important;
     transform: none !important;
 }
 .sales-fab {
     bottom: 20px !important;
+    z-index: 950 !important;
 }
 .sales-assistant-widget {
-    bottom: 80px !important;
+    bottom: 84px !important;
     cursor: default !important;
+    z-index: 951 !important;
 }
 .sales-assistant-widget .assistant-header {
     cursor: default !important;
@@ -2361,6 +2363,20 @@ input, select, textarea {
 .sales-assistant-widget.dragging {
     cursor: default !important;
     opacity: 1 !important;
+}
+
+@media (max-width: 768px) {
+    .sales-fab {
+        left: 16px !important;
+        right: auto !important;
+        bottom: 88px !important;
+    }
+    .sales-assistant-widget {
+        left: 16px !important;
+        right: auto !important;
+        bottom: 152px !important;
+        width: min(90vw, 340px) !important;
+    }
 }
 
 /* ============================================================
