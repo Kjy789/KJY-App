@@ -6,7 +6,8 @@ CRUD - ฟังก์ชันจัดการข้อมูลหลัก�
 
 from database import db_session, supabase_client, supabase_admin
 import logging
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 
 logger = logging.getLogger("crud")
 
@@ -51,11 +52,12 @@ def _sanitize_supabase_payload_with_migration(payload: dict) -> dict:
 
 
 # ============================================================
-# AUDIT LOG
+# AUDIT LOG (บันทึกประวัติกิจกรรมทั้ง Staff และ Owner)
 # ============================================================
 
 def add_audit_log(action_type: str, description: str, performed_by: str = "staff"):
-    """บันทึก Audit Log อัตโนมัติ"""
+    """บันทึก Audit Log อัตโนมัติ (บันทึกลงทั้ง SQLite และ Supabase ถ้าพร้อมใช้งาน)"""
+    # 1. บันทึกลง SQLite
     try:
         with db_session() as conn:
             conn.execute(
@@ -64,18 +66,65 @@ def add_audit_log(action_type: str, description: str, performed_by: str = "staff
                 (action_type, description, performed_by)
             )
     except Exception as e:
-        logger.warning(f"Failed to write audit log: {e}")
+        logger.warning(f"Failed to write SQLite audit log: {e}")
+
+    # 2. บันทึกลง Supabase ถ้ามี cloud connection
+    if supabase_admin:
+        try:
+            supabase_admin.from_("audit_log").insert({
+                "action_type": action_type,
+                "description": description,
+                "performed_by": performed_by,
+                "timestamp": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            # ไม่ throw error เพื่อไม่ให้ขัดจังหวะการทำงานหลัก
+            pass
 
 
-def get_audit_logs(limit: int = 100):
-    """ดึง Audit Log ล่าสุด"""
+def get_audit_logs(limit: int = 100, user: str = None, keyword: str = None):
+    """ดึง Audit Log ล่าสุด (ลอง Supabase ก่อน ถ้าไม่มีใช้ SQLite)
+
+    รองรับการกรอง:
+    - user: "all" (ค่าเริ่มต้น) / "owner" (รวม boss) / "staff"
+    - keyword: ค้นหาจาก action_type, description, performed_by
+    """
+    user = (user or "").strip().lower()
+    keyword = (keyword or "").strip().lower()
+
+    def _matches(row: dict) -> bool:
+        by = str(row.get("performed_by") or "").strip().lower()
+        if user and user not in ("all", "ทุกคน", "ทั้งหมด"):
+            if user in ("owner", "boss", "เจ้าของ"):
+                if by not in ("owner", "boss"):
+                    return False
+            elif by != user:
+                return False
+        if keyword:
+            hay = " ".join([
+                str(row.get("action_type") or ""),
+                str(row.get("description") or ""),
+                by,
+            ]).lower()
+            if keyword not in hay:
+                return False
+        return True
+
+    if supabase_admin:
+        try:
+            res = supabase_admin.from_("audit_log").select("*").order("timestamp", desc=True).limit(limit).execute()
+            if res.data and len(res.data) > 0:
+                return [r for r in res.data if _matches(r)]
+        except Exception:
+            pass
+
     try:
         with db_session() as conn:
             rows = conn.execute(
                 "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?",
                 (limit,)
             ).fetchall()
-            return [dict(r) for r in rows]
+            return [dict(r) for r in rows if _matches(dict(r))]
     except Exception as e:
         logger.warning(f"Failed to read audit logs: {e}")
         return []
@@ -263,7 +312,7 @@ def get_product_staff(product_id: int):
 def add_product_staff(name, sale_price=0, cost_price=0, category=None, sku=None,
                       location_code=None, location="", description="",
                       image_path=None, location_image_path=None, stock_qty=0, min_stock=5,
-                      front_stock=0, warehouse_stock=0):
+                      front_stock=0, warehouse_stock=0, performed_by="staff"):
     """
     Staff เพิ่มสินค้าใหม่เข้าคลัง (สินค้ามีสถานะ active ทันที)
     รองรับการแยกสต็อก:
@@ -318,7 +367,7 @@ def add_product_staff(name, sale_price=0, cost_price=0, category=None, sku=None,
             if res.data:
                 pid = res.data[0]["id"]
                 logger.info(f"[SUPABASE] Insert success! product_id={pid}")
-                add_audit_log("เพิ่มสินค้า", f"เพิ่มสินค้า '{name}' (SKU: {sku})", "staff")
+                add_audit_log("เพิ่มสินค้า", f"เพิ่มสินค้า '{name}' (SKU: {sku})", performed_by)
                 return pid
             else:
                 logger.warning(f"[SUPABASE] Insert returned empty data. Response: {res}")
@@ -347,7 +396,7 @@ def add_product_staff(name, sale_price=0, cost_price=0, category=None, sku=None,
         except Exception:
             pass
 
-        add_audit_log("เพิ่มสินค้า", f"เพิ่มสินค้า '{name}' (SKU: {sku})", "staff")
+        add_audit_log("เพิ่มสินค้า", f"เพิ่มสินค้า '{name}' (SKU: {sku})", performed_by)
 
         if location_code and location_image_path:
             conn.execute(
@@ -358,7 +407,7 @@ def add_product_staff(name, sale_price=0, cost_price=0, category=None, sku=None,
         return pid
 
 
-def update_product_staff(product_id: int, **fields):
+def update_product_staff(product_id: int, performed_by: str = "staff", **fields):
     """
     แก้ไขข้อมูลสินค้า
     - Staff: ไม่อนุญาตให้แก้ไข cost_price
@@ -442,7 +491,7 @@ def update_product_staff(product_id: int, **fields):
             res = supabase_admin.from_("products").update(safe_payload).eq("id", product_id).execute()
             if res.data:
                 logger.info(f"[SUPABASE] Update success for id={product_id}, updated fields: {list(safe_payload.keys())}")
-                add_audit_log("แก้ไขสินค้า", f"แก้ไขสินค้า id={product_id}: {', '.join(filtered_fields.keys())}", "staff")
+                add_audit_log("แก้ไขสินค้า", f"แก้ไขสินค้า id={product_id}: {', '.join(filtered_fields.keys())}", performed_by)
                 return
             else:
                 # Supabase updated 0 rows — อาจเกิดจาก RLS, product_id ไม่มี, หรือ service role key ผิด
@@ -461,10 +510,10 @@ def update_product_staff(product_id: int, **fields):
     values.append(product_id)
     with db_session() as conn:
         conn.execute(f"UPDATE products SET {set_clause} WHERE id = ?", values)
-        add_audit_log("แก้ไขสินค้า", f"แก้ไขสินค้า id={product_id}: {', '.join(filtered_fields.keys())}", "staff")
+        add_audit_log("แก้ไขสินค้า", f"แก้ไขสินค้า id={product_id}: {', '.join(filtered_fields.keys())}", performed_by)
 
 
-def transfer_stock(product_id: int, qty: int, direction: str = "to_front"):
+def transfer_stock(product_id: int, qty: int, direction: str = "to_front", performed_by: str = "staff"):
     """
     ย้ายสต็อกระหว่างหน้าร้าน (front_stock) กับคลังหลังร้าน (warehouse_stock)
     - direction="to_front": ย้ายจากคลังหลังร้าน -> หน้าร้าน
@@ -504,7 +553,7 @@ def transfer_stock(product_id: int, qty: int, direction: str = "to_front"):
                 "stock_qty": new_front + new_warehouse
             }).eq("id", product_id).execute()
 
-            add_audit_log("ย้ายสต็อก", f"ย้ายสต็อก '{name}' จำนวน {qty} ชิ้น ({'คลัง->หน้าร้าน' if direction=='to_front' else 'หน้าร้าน->คลัง'})", "staff")
+            add_audit_log("ย้ายสต็อก", f"ย้ายสต็อก '{name}' จำนวน {qty} ชิ้น ({'คลัง->หน้าร้าน' if direction=='to_front' else 'หน้าร้าน->คลัง'})", performed_by)
             return {"status": "ok", "front_stock": new_front, "warehouse_stock": new_warehouse}
         except ValueError:
             raise
@@ -555,11 +604,11 @@ def transfer_stock(product_id: int, qty: int, direction: str = "to_front"):
             new_front = None
             new_warehouse = None
 
-        add_audit_log("ย้ายสต็อก", f"ย้ายสต็อก '{name}' จำนวน {qty} ชิ้น ({'คลัง->หน้าร้าน' if direction=='to_front' else 'หน้าร้าน->คลัง'})", "staff")
+        add_audit_log("ย้ายสต็อก", f"ย้ายสต็อก '{name}' จำนวน {qty} ชิ้น ({'คลัง->หน้าร้าน' if direction=='to_front' else 'หน้าร้าน->คลัง'})", performed_by)
         return {"status": "ok", "front_stock": new_front, "warehouse_stock": new_warehouse}
 
 
-def delete_product_staff(product_id: int):
+def delete_product_staff(product_id: int, performed_by: str = "staff"):
     """
     Owner ลบสินค้า (ทั้งจาก Supabase และ SQLite)
     ลบ record ที่เกี่ยวข้องใน cost_history ด้วย (ON DELETE CASCADE)
@@ -577,7 +626,7 @@ def delete_product_staff(product_id: int):
                 logger.info(f"[SUPABASE] Deleting product id={product_id} name='{product_name}'")
                 supabase_admin.from_("products").delete().eq("id", product_id).execute()
                 deleted = True
-                add_audit_log("PRODUCT_DELETE", f"ลบสินค้า '{product_name}' (id={product_id}) จาก Supabase", "staff")
+                add_audit_log("PRODUCT_DELETE", f"ลบสินค้า '{product_name}' (id={product_id}) จาก Supabase", performed_by)
                 logger.info(f"Deleted product id={product_id} from Supabase")
         except Exception as e:
             import traceback
@@ -599,7 +648,7 @@ def delete_product_staff(product_id: int):
                 conn.execute("DELETE FROM cost_history WHERE product_id = ?", (product_id,))
                 conn.execute("DELETE FROM receipt_items WHERE product_id = ?", (product_id,))
                 deleted = True
-                add_audit_log("PRODUCT_DELETE", f"ลบสินค้า '{pname}' (id={product_id}) จาก SQLite", "staff")
+                add_audit_log("PRODUCT_DELETE", f"ลบสินค้า '{pname}' (id={product_id}) จาก SQLite", performed_by)
                 logger.info(f"Deleted product id={product_id} from SQLite")
     except Exception as e:
         logger.error(f"[DELETE] SQLite delete failed for product id={product_id}: {e}")
@@ -610,13 +659,21 @@ def delete_product_staff(product_id: int):
     return product_id
 
 
-def process_checkout(cart_items: list, payment_type: str = "cash", total_amount: float = 0.0):
+def process_checkout(cart_items: list, payment_type: str = "cash", total_amount: float = 0.0, received_amount: float = None, change_amount: float = 0.0, sold_by: str = "staff"):
     """
-    ประมวลผลการชำระเงินหน้าร้านและตัดสต็อกสินค้าในคลัง
+    ประมวลผลการชำระเงินหน้าร้าน ตัดสต็อกสินค้าในคลัง และบันทึกประวัติลงตาราง sales
     cart_items: [{"product_id": 1, "qty": 2}, ...]
     """
     if not cart_items:
         raise ValueError("ตะกร้าสินค้าว่างเปล่า")
+
+    if received_amount is None:
+        received_amount = total_amount
+
+    # สร้างเลขที่บิลขาย
+    receipt_no = f"INV-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    items_detailed = []
+    total_qty = 0
 
     with db_session() as conn:
         for item in cart_items:
@@ -626,11 +683,29 @@ def process_checkout(cart_items: list, payment_type: str = "cash", total_amount:
             if not pid or qty <= 0:
                 continue
 
-            # Get product name for audit log
-            p = conn.execute("SELECT name FROM products WHERE id = ?", (pid,)).fetchone()
-            pname = p["name"] if p else f"id={pid}"
+            total_qty += qty
 
-            # Local SQLite update
+            # ดึงข้อมูลสินค้าเพื่อเก็บในบิล
+            p = conn.execute("SELECT id, name, sku, sale_price, category FROM products WHERE id = ?", (pid,)).fetchone()
+            if p:
+                pname = p["name"]
+                price = float(p["sale_price"] or 0.0)
+                sku = p["sku"] or ""
+            else:
+                pname = f"สินค้า id={pid}"
+                price = 0.0
+                sku = ""
+
+            items_detailed.append({
+                "product_id": pid,
+                "name": pname,
+                "sku": sku,
+                "qty": qty,
+                "price": price,
+                "line_total": price * qty
+            })
+
+            # Local SQLite update stock
             conn.execute(
                 """UPDATE products 
                    SET stock_qty = MAX(0, stock_qty - ?),
@@ -642,17 +717,254 @@ def process_checkout(cart_items: list, payment_type: str = "cash", total_amount:
             # Supabase update if active
             if supabase_admin:
                 try:
-                    p = supabase_admin.from_("products").select("stock_qty").eq("id", pid).single().execute()
-                    if p.data:
-                        current_stock = p.data.get("stock_qty", 0)
+                    sp_prod = supabase_admin.from_("products").select("stock_qty").eq("id", pid).single().execute()
+                    if sp_prod.data:
+                        current_stock = sp_prod.data.get("stock_qty", 0)
                         new_stock = max(0, current_stock - qty)
                         supabase_admin.from_("products").update({"stock_qty": new_stock}).eq("id", pid).execute()
                 except Exception as e:
                     logger.warning(f"Supabase checkout stock update failed for id={pid}: {e}")
 
-            add_audit_log("ขายสินค้า", f"ขาย '{pname}' จำนวน {qty} ชิ้น (รวม {total_amount:.2f} บาท)", "staff")
+        # บันทึกลงตาราง sales ใน SQLite
+        items_json_str = json.dumps(items_detailed, ensure_ascii=False)
+        conn.execute(
+            """INSERT INTO sales (receipt_no, total_amount, received_amount, change_amount, payment_type, items_json, items_count, sold_by, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))""",
+            (receipt_no, total_amount, received_amount, change_amount, payment_type, items_json_str, total_qty, sold_by)
+        )
 
-    return {"status": "ok", "message": "บันทึกการขายและตัดสต็อกเรียบร้อยแล้ว"}
+        # บันทึกลง Supabase sales ถ้ามีตารางรองรับ
+        if supabase_admin:
+            try:
+                supabase_admin.from_("sales").insert({
+                    "receipt_no": receipt_no,
+                    "total_amount": total_amount,
+                    "received_amount": received_amount,
+                    "change_amount": change_amount,
+                    "payment_type": payment_type,
+                    "items_json": items_json_str,
+                    "items_count": total_qty,
+                    "sold_by": sold_by,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as sp_err:
+                logger.info(f"Supabase sales table insert skipped: {sp_err}")
+
+        item_names = [f"{it['name']} x{it['qty']}" for it in items_detailed[:3]]
+        items_summary = ", ".join(item_names)
+        if len(items_detailed) > 3:
+            items_summary += f" และอีก {len(items_detailed) - 3} รายการ"
+
+        add_audit_log(
+            "ขายสินค้า",
+            f"บิล {receipt_no}: ขาย {items_summary} (รวม ฿{total_amount:,.2f}) [{payment_type}]",
+            sold_by
+        )
+
+    return {
+        "status": "ok",
+        "receipt_no": receipt_no,
+        "total_amount": total_amount,
+        "items_count": total_qty,
+        "message": "บันทึกการขายและตัดสต็อกเรียบร้อยแล้ว"
+    }
+
+
+def list_sales(limit: int = 100, keyword: str = None):
+    """ดึงรายงานประวัติการขายทั้งหมด"""
+    # 1. ลองดึงจาก Supabase ก่อน
+    if supabase_admin:
+        try:
+            q = supabase_admin.from_("sales").select("*").order("created_at", desc=True).limit(limit)
+            if keyword:
+                kw = keyword.strip()
+                q = q.or_(f"receipt_no.ilike.%{kw}%,sold_by.ilike.%{kw}%,payment_type.ilike.%{kw}%,items_json.ilike.%{kw}%")
+            res = q.execute()
+            if res.data and len(res.data) > 0:
+                sales = []
+                for r in res.data:
+                    items = []
+                    try:
+                        items = json.loads(r.get("items_json") or "[]")
+                    except Exception:
+                        pass
+                    r["items"] = items
+                    sales.append(r)
+                return sales
+        except Exception:
+            pass
+
+    # 2. SQLite local fallback
+    try:
+        with db_session() as conn:
+            query = "SELECT * FROM sales"
+            params = []
+            if keyword:
+                kw = f"%{keyword.strip()}%"
+                query += " WHERE receipt_no LIKE ? OR sold_by LIKE ? OR payment_type LIKE ? OR items_json LIKE ?"
+                params.extend([kw, kw, kw, kw])
+            query += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+
+            rows = conn.execute(query, params).fetchall()
+            sales = []
+            for r in rows:
+                item_dict = dict(r)
+                items = []
+                try:
+                    items = json.loads(item_dict.get("items_json") or "[]")
+                except Exception:
+                    pass
+                item_dict["items"] = items
+                sales.append(item_dict)
+            return sales
+    except Exception as e:
+        logger.warning(f"Failed to read sales history: {e}")
+        return []
+
+
+def get_sales_summary():
+    """ดึงสถิติสรุปยอดขาย (วันนี้ และ ยอดรวมทั้งหมด)"""
+    summary = {
+        "today_sales": 0.0,
+        "today_orders": 0,
+        "total_sales": 0.0,
+        "total_orders": 0,
+        "total_items_sold": 0
+    }
+    try:
+        with db_session() as conn:
+            row_all = conn.execute(
+                "SELECT COALESCE(SUM(total_amount), 0) as total_rev, COUNT(*) as total_cnt, COALESCE(SUM(items_count), 0) as total_items FROM sales"
+            ).fetchone()
+            if row_all:
+                summary["total_sales"] = float(row_all["total_rev"] or 0)
+                summary["total_orders"] = int(row_all["total_cnt"] or 0)
+                summary["total_items_sold"] = int(row_all["total_items"] or 0)
+
+            row_today = conn.execute(
+                "SELECT COALESCE(SUM(total_amount), 0) as today_rev, COUNT(*) as today_cnt FROM sales WHERE date(created_at) = date('now', 'localtime')",
+            ).fetchone()
+            if row_today:
+                summary["today_sales"] = float(row_today["today_rev"] or 0)
+                summary["today_orders"] = int(row_today["today_cnt"] or 0)
+    except Exception as e:
+        logger.warning(f"Failed to get sales summary: {e}")
+    return summary
+
+
+# ============================================================
+# TODAY'S SALES REPORT (จากตาราง sales เท่านั้น - ข้อมูลจริงประจำวัน)
+# ============================================================
+
+def get_today_sales_summary(keyword: str = None):
+    """
+    สรุปรายงานยอดขายของวันนี้ (Today's Sales)
+    อ่านจากตาราง sales / transactions เท่านั้น
+    - ห้ามนำรายการสินค้าที่เพิ่งเพิ่มเข้าคลัง (products) มาแสดง
+    - คืนค่า: ยอดขายรวม, จำนวนบิล, จำนวนชิ้นที่ขายได้, รายการสินค้าที่ขายได้จริงวันนี้ (รวมแบบ Grouped), และรายการบิลวันนี้
+    """
+    keyword = (keyword or "").strip().lower()
+    today_data = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "total_sales": 0.0,
+        "total_orders": 0,
+        "total_items_sold": 0,
+        "items": [],   # สรุปรายการสินค้าที่ขายได้จริงวันนี้
+        "bills": [],   # รายการบิลขายที่เกิดขึ้นวันนี้
+    }
+
+    bills = None
+
+    # 1) ลอง Supabase ก่อน (ถ้ามี cloud connection)
+    if supabase_admin:
+        try:
+            today_start = datetime.now().strftime("%Y-%m-%dT00:00:00")
+            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+            res = (
+                supabase_admin.from_("sales")
+                .select("*")
+                .gte("created_at", today_start)
+                .lt("created_at", tomorrow)
+                .order("created_at", desc=True)
+                .limit(500)
+                .execute()
+            )
+            if res.data:
+                tmp = []
+                for r in res.data:
+                    items = []
+                    try:
+                        items = json.loads(r.get("items_json") or "[]")
+                    except Exception:
+                        pass
+                    r["items"] = items
+                    tmp.append(r)
+                bills = tmp
+        except Exception:
+            bills = None
+
+    # 2) SQLite local fallback
+    if bills is None:
+        try:
+            with db_session() as conn:
+                rows = conn.execute(
+                    """SELECT * FROM sales
+                       WHERE date(created_at) = date('now', 'localtime')
+                       ORDER BY created_at DESC LIMIT 500"""
+                ).fetchall()
+                tmp = []
+                for r in rows:
+                    d = dict(r)
+                    items = []
+                    try:
+                        items = json.loads(d.get("items_json") or "[]")
+                    except Exception:
+                        pass
+                    d["items"] = items
+                    tmp.append(d)
+                bills = tmp
+        except Exception as e:
+            logger.warning(f"Failed to read today sales: {e}")
+            bills = []
+
+    if not bills:
+        return today_data
+
+    items_agg = {}
+    for sale in bills:
+        today_data["total_sales"] += float(sale.get("total_amount") or 0)
+        today_data["total_orders"] += 1
+        today_data["total_items_sold"] += int(sale.get("items_count") or 0)
+        for it in (sale.get("items") or []):
+            name = str(it.get("name") or "สินค้าไม่ทราบชื่อ").strip() or "สินค้าไม่ทราบชื่อ"
+            qty = float(it.get("qty") or 0)
+            line_total = float(it.get("line_total") or 0) or (float(it.get("price") or 0) * qty)
+            agg = items_agg.get(name)
+            if agg is None:
+                agg = {"name": name, "sku": it.get("sku") or "", "qty": 0.0, "revenue": 0.0}
+                items_agg[name] = agg
+            agg["qty"] += qty
+            agg["revenue"] += line_total
+
+    today_data["items"] = sorted(items_agg.values(), key=lambda x: -x["qty"])
+
+    if keyword:
+        filtered_bills = []
+        for b in bills:
+            hay = " ".join([
+                str(b.get("receipt_no") or ""),
+                str(b.get("sold_by") or ""),
+                str(b.get("payment_type") or ""),
+                str(b.get("items_json") or ""),
+            ]).lower()
+            if keyword in hay:
+                filtered_bills.append(b)
+        today_data["bills"] = filtered_bills
+    else:
+        today_data["bills"] = bills
+
+    return today_data
 
 
 
@@ -823,8 +1135,10 @@ def get_receipt_items(receipt_id: int):
         return [dict(r) for r in rows]
 
 
-def create_pending_product_from_receipt(receipt_id, ocr_name, qty, unit_cost):
+def create_pending_product_from_receipt(receipt_id, ocr_name, qty, unit_cost, line_total=None):
     """Phase A: สร้างสินค้าแบบ pending จากบิลสั่งซื้อ"""
+    if line_total is None:
+        line_total = float(qty) * float(unit_cost)
     with db_session() as conn:
         cur = conn.execute(
             """INSERT INTO products (name, latest_cost, stock_qty, status)
@@ -836,7 +1150,7 @@ def create_pending_product_from_receipt(receipt_id, ocr_name, qty, unit_cost):
         conn.execute(
             """INSERT INTO receipt_items (receipt_id, product_id, ocr_name, qty, unit_cost, line_total, matched)
                VALUES (?, ?, ?, ?, ?, ?, 1)""",
-            (receipt_id, product_id, ocr_name, qty, unit_cost, qty * unit_cost),
+            (receipt_id, product_id, ocr_name, qty, unit_cost, line_total),
         )
 
         conn.execute(

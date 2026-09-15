@@ -121,6 +121,25 @@
                     <button class="scan-btn" onclick="openScanner('stock')"><i class="fa-solid fa-barcode"></i></button>
                 </div>
             </div>
+            <!-- สรุปจำนวนสินค้าและจำนวนชิ้นทั้งหมดในสต็อก -->
+            <div class="stock-summary-bar" id="stock-summary-bar" style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:10px 16px;background:var(--card-bg, #fff);border:1px solid var(--border);border-radius:var(--radius-lg, 12px);font-size:13px">
+                <div style="display:flex;align-items:center;gap:6px">
+                    <i class="fa-solid fa-boxes-stacked" style="color:var(--blue)"></i>
+                    <span>สินค้าทั้งหมด: <strong id="stock-stat-total-skus" style="color:var(--blue);font-size:14px">0</strong> รายการ</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px">
+                    <i class="fa-solid fa-cubes" style="color:#059669"></i>
+                    <span>สต็อกทั้งหมด: <strong id="stock-stat-total-pieces" style="color:#059669;font-size:14px">0</strong> ชิ้น</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px">
+                    <i class="fa-solid fa-triangle-exclamation" style="color:#d97706"></i>
+                    <span>ใกล้หมด: <strong id="stock-stat-low-stock" style="color:#d97706;font-size:14px">0</strong> รายการ</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px">
+                    <i class="fa-solid fa-circle-xmark" style="color:#dc2626"></i>
+                    <span>หมดสต็อก: <strong id="stock-stat-out-stock" style="color:#dc2626;font-size:14px">0</strong> รายการ</span>
+                </div>
+            </div>
             <div class="table-card">
                 <div class="table-scroll">
                     <table class="data-table">
@@ -153,41 +172,100 @@
                 <div id="ocr-result" class="hidden">
                     <h4><i class="fa-solid fa-circle-check" style="color:#10B981"></i> ผลลัพธ์จาก AI OCR</h4>
                     <div class="table-scroll compact"><table class="data-table"><thead><tr><th>สินค้า</th><th class="r">จำนวน</th><th class="r">ต้นทุน/ชิ้น</th><th class="r">รวม</th></tr></thead><tbody id="ocr-body"></tbody></table></div>
+                    <p style="text-align:right;font-size:13px;margin:8px 0 0;color:var(--text)">ยอดรวมทั้งบิล: <strong id="ocr-total" style="color:var(--blue);font-size:15px">฿0</strong></p>
                     <div class="ocr-actions"><button class="btn-green" onclick="confirmOcr()"><i class="fa-solid fa-check"></i> บันทึกเข้าระบบ</button><button class="btn-outline" onclick="resetOcr()"><i class="fa-solid fa-rotate-right"></i> สแกนใหม่</button></div>
                 </div>
             </div>
         </section>
 
-        <!-- ---- VIEW: REPORTS (Owner: Finance) ---- -->
+        <!-- ---- VIEW: REPORTS (Owner: Finance & Sales) ---- -->
         <section class="view owner-only hidden" id="view-reports">
             <div class="view-head">
                 <div>
                     <h2><i class="fa-solid fa-chart-column"></i> รายงานและการเงิน</h2>
-                    <p class="sub">วิเคราะห์ต้นทุน กำไร มูลค่า และสต็อกต่ำ</p>
+                    <p class="sub">รายงานการขายหน้าร้าน ประวัติบิล วิเคราะห์ต้นทุนและกำไร</p>
                 </div>
                 <div class="hstack">
+                    <button class="btn-outline" onclick="openAuditLog()"><i class="fa-solid fa-clock-rotate-left"></i> ดู Audit Log</button>
                     <a href="/api/owner/export-excel" class="btn-green"><i class="fa-solid fa-file-excel"></i> Excel</a>
                     <a href="/api/owner/export-csv" class="btn-outline"><i class="fa-solid fa-file-csv"></i> CSV</a>
                 </div>
             </div>
-            <div class="stats">
+
+            <!-- Tab selector for reports -->
+            <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+                <button class="btn-primary" id="btn-tab-sales" onclick="switchReportTab('sales')">
+                    <i class="fa-solid fa-receipt"></i> รายงานการขาย (ประวัติบิล)
+                </button>
+                <button class="btn-outline" id="btn-tab-products" onclick="switchReportTab('products')">
+                    <i class="fa-solid fa-chart-pie"></i> วิเคราะห์กำไรรายสินค้า
+                </button>
+            </div>
+
+            <!-- Sales Stats (Shown on Sales Tab) -->
+            <div class="stats" id="sales-stats-cards">
+                <div class="stat-card green"><div class="stat-icon"><i class="fa-solid fa-circle-dollar-to-slot"></i></div><div><small>ยอดขายวันนี้</small><h3 id="stat-sales-today">฿0</h3></div></div>
+                <div class="stat-card blue"><div class="stat-icon"><i class="fa-solid fa-receipt"></i></div><div><small>จำนวนบิลวันนี้</small><h3 id="stat-orders-today">0 บิล</h3></div></div>
+                <div class="stat-card indigo"><div class="stat-icon"><i class="fa-solid fa-sack-dollar"></i></div><div><small>ยอดขายรวมวันนี้</small><h3 id="stat-sales-total">฿0</h3></div></div>
+                <div class="stat-card red"><div class="stat-icon"><i class="fa-solid fa-boxes-stacked"></i></div><div><small>จำนวนชิ้นที่ขายได้วันนี้</small><h3 id="stat-items-sold">0 ชิ้น</h3></div></div>
+            </div>
+
+            <!-- Product Stats (Shown on Products Tab) -->
+            <div class="stats hidden" id="product-stats-cards">
                 <div class="stat-card blue"><div class="stat-icon"><i class="fa-solid fa-warehouse"></i></div><div><small>มูลค่ารวม (ต้นทุน)</small><h3 id="stat-cost">฿0</h3></div></div>
                 <div class="stat-card indigo"><div class="stat-icon"><i class="fa-solid fa-tags"></i></div><div><small>มูลค่ารวม (ขาย)</small><h3 id="stat-sale">฿0</h3></div></div>
                 <div class="stat-card green"><div class="stat-icon"><i class="fa-solid fa-money-bill-trend-up"></i></div><div><small>กำไรคาดการณ์</small><h3 id="stat-profit">฿0</h3></div></div>
                 <div class="stat-card red"><div class="stat-icon"><i class="fa-solid fa-triangle-exclamation"></i></div><div><small>สต็อกต่ำ</small><h3 id="stat-low">0</h3></div></div>
             </div>
 
-            <!-- Audit Log Button -->
-            <div class="view-head" style="padding:8px 24px;border:none;background:transparent">
-                <button class="btn-outline" onclick="openAuditLog()" style="font-size:12px"><i class="fa-solid fa-clock-rotate-left"></i> ดู Audit Log (ต้องใส่ PIN)</button>
-            </div>
-
-            <div class="table-card">
-                <div class="table-head"><h3>วิเคราะห์กำไรรายสินค้า</h3>
-                    <div class="mini-search"><i class="fa-solid fa-magnifying-glass"></i><input type="text" id="owner-search" placeholder="ค้นหา..." oninput="debounceSearch('owner')"></div>
+            <!-- Section 1: Today's Items Sold Summary -->
+            <div class="table-card" id="today-items-section">
+                <div class="table-head">
+                    <h3><i class="fa-solid fa-cart-shopping"></i> สินค้าที่ขายได้จริงวันนี้ (Today's Items)</h3>
                 </div>
                 <div class="table-scroll">
-                    <table class="data-table"><thead><tr><th>สินค้า</th><th class="c">สต็อก</th><th class="r">ต้นทุน</th><th class="r">ราคาขาย</th><th class="r">กำไร/ชิ้น</th><th class="r">% กำไร</th><th class="r">มูลค่ารวม</th></tr></thead><tbody id="owner-body"><tr><td colspan="7" class="empty">กำลังโหลด...</td></tr></tbody></table>
+                    <table class="data-table">
+                        <thead><tr><th>สินค้า</th><th>SKU</th><th class="c">จำนวนชิ้นที่ขายได้</th><th class="r">ยอดขาย (บาท)</th></tr></thead>
+                        <tbody id="today-items-body"><tr><td colspan="4" class="empty">กำลังโหลดข้อมูลวันนี้...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Section 2: Today's Bills (จากตาราง sales เท่านั้น) -->
+            <div class="table-card" id="sales-report-section">
+                <div class="table-head">
+                    <h3><i class="fa-solid fa-receipt"></i> รายการขายวันนี้ (บิลจากตารางคำสั่งซื้อ/การขาย)</h3>
+                    <div class="mini-search"><i class="fa-solid fa-magnifying-glass"></i><input type="text" id="sales-search" placeholder="ค้นหาเลขบิล, ผู้ขาย..." oninput="debounceSearch('sales')"></div>
+                </div>
+            <div class="table-scroll">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>เวลา / วันที่</th>
+                                <th>เลขที่บิล</th>
+                                <th>รายการสินค้าที่ขาย</th>
+                                <th class="c">จำนวนชิ้น</th>
+                                <th class="r">ยอดสุทธิ</th>
+                                <th class="c">การชำระ</th>
+                                <th class="c">ผู้ขาย</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sales-body"><tr><td colspan="7" class="empty">กำลังโหลดยอดขายวันนี้...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Section 2: Product Profit Table -->
+            <div class="table-card hidden" id="product-report-section">
+                <div class="table-head">
+                    <h3><i class="fa-solid fa-chart-pie"></i> วิเคราะห์กำไรและต้นทุนรายสินค้า</h3>
+                    <div class="mini-search"><i class="fa-solid fa-magnifying-glass"></i><input type="text" id="owner-search" placeholder="ค้นหาชื่อ, SKU..." oninput="debounceSearch('owner')"></div>
+                </div>
+                <div class="table-scroll">
+                    <table class="data-table">
+                        <thead><tr><th>สินค้า</th><th class="c">สต็อก</th><th class="r">ต้นทุน</th><th class="r">ราคาขาย</th><th class="r">กำไร/ชิ้น</th><th class="r">% กำไร</th><th class="r">มูลค่ารวม</th></tr></thead>
+                        <tbody id="owner-body"><tr><td colspan="7" class="empty">กำลังโหลด...</td></tr></tbody>
+                    </table>
                 </div>
             </div>
         </section>
@@ -508,6 +586,15 @@
     <div class="modal large">
         <div class="modal-head"><h3><i class="fa-solid fa-clock-rotate-left"></i> Audit Log</h3><button class="close" onclick="closeModal('modal-audit')">&times;</button></div>
         <div class="modal-body" style="padding:12px">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+                <label style="font-size:12px;color:var(--text-secondary)"><i class="fa-solid fa-user-gear"></i> ผู้ใช้งาน:</label>
+                <select id="audit-user-filter" class="input" style="width:auto;min-width:170px;font-size:13px" onchange="loadAuditLogs()">
+                    <option value="all">ทั้งหมด (Owner + Staff)</option>
+                    <option value="owner">เฉพาะเจ้าของร้าน (Owner)</option>
+                    <option value="staff">เฉพาะพนักงาน (Staff)</option>
+                </select>
+                <input type="text" id="audit-keyword" class="input" style="flex:1;min-width:160px;font-size:13px" placeholder="ค้นหาการกระทำ / รายละเอียด..." oninput="auditSearchTimer()">
+            </div>
             <div class="table-scroll" style="max-height:400px">
                 <table class="data-table"><thead><tr><th>เวลา</th><th>การกระทำ</th><th>รายละเอียด</th><th>ผู้ทำ</th></tr></thead><tbody id="audit-body"><tr><td colspan="4" class="empty">กำลังโหลด...</td></tr></tbody></table>
             </div>

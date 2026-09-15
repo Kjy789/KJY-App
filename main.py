@@ -149,15 +149,25 @@ async def save_uploaded_file(file: UploadFile, folder_dir: str, prefix: str = ""
 # ============================================================
 # GEMINI MULTI-KEY & MULTI-MODEL HELPER (Silent Failover)
 # ============================================================
+def _clean_key(val):
+    if not val:
+        return ""
+    for line in val.strip().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return line
+    return ""
+
+
 def _get_gemini_keys():
-    primary = GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY", "")
-    backup = GEMINI_API_KEY_BACKUP or os.environ.get("GEMINI_API_KEY_BACKUP", "")
+    primary = _clean_key(GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY", ""))
+    backup = _clean_key(GEMINI_API_KEY_BACKUP or os.environ.get("GEMINI_API_KEY_BACKUP", ""))
     if not primary:
         p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api.txt")
         if os.path.exists(p):
             try:
                 with open(p, "r", encoding="utf-8") as f:
-                    primary = f.read().strip()
+                    primary = _clean_key(f.read())
             except Exception:
                 pass
     if not backup:
@@ -165,33 +175,36 @@ def _get_gemini_keys():
         if os.path.exists(b):
             try:
                 with open(b, "r", encoding="utf-8") as f:
-                    backup = f.read().strip()
+                    backup = _clean_key(f.read())
             except Exception:
                 pass
     return primary, backup
 
 
-def _gemini_generate(contents, primary_model="gemini-3.6-flash", backup_model="gemini-3.5-flash"):
+def _gemini_generate(contents, primary_model="gemini-2.5-flash", backup_model="gemini-1.5-flash"):
     from google import genai
     primary_key, backup_key = _get_gemini_keys()
-    attempts = []
-    if primary_key:
-        attempts.append((primary_key, primary_model))
-    if backup_key:
-        attempts.append((backup_key, backup_model))
-    if primary_key and not backup_key:
-        attempts.append((primary_key, backup_model))
+    models_to_try = [primary_model, backup_model, "gemini-1.5-flash"]
+    seen_m = set()
+    uniq_models = [m for m in models_to_try if m and not (m in seen_m or seen_m.add(m))]
+    
+    keys_to_try = [k for k in [primary_key, backup_key] if k]
+    if not keys_to_try:
+        print("[GEMINI] No API key available")
+        return None
+
     last_err = None
-    for key, model in attempts:
-        try:
-            client = genai.Client(api_key=key)
-            response = client.models.generate_content(model=model, contents=contents)
-            if response and response.text:
-                return response.text
-        except Exception as e:
-            last_err = e
-            print(f"[GEMINI] Model '{model}' failed: {e}")
-            continue
+    for key in keys_to_try:
+        for model in uniq_models:
+            try:
+                client = genai.Client(api_key=key)
+                response = client.models.generate_content(model=model, contents=contents)
+                if response and response.text:
+                    return response.text
+            except Exception as e:
+                last_err = e
+                print(f"[GEMINI] Key {key[:6]}... Model '{model}' failed: {e}")
+                continue
     if last_err:
         print(f"[GEMINI] All attempts failed: {last_err}")
     return None
@@ -202,22 +215,37 @@ def _gemini_generate(contents, primary_model="gemini-3.6-flash", backup_model="g
 # ============================================================
 
 def call_gemini_ocr(image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
-    """เรียก Google Gemini API ให้อ่านบิลสั่งซื้อสินค้า (Multi-Key & Multi-Model Fallback)"""
+    """เรียก Gemini API ให้อ่านบิล/ใบเสร็จสั่งซื้อสินค้า (Vision/OCR)
+    ใช้โมเดล gemini-2.5-flash (primary) -> gemini-1.5-flash (backup) เท่านั้น
+    เอาต์พุต JSON ต่อรายการ: name, qty, unit_price (ราคาต่อหน่วย), price (ราคารวม)
+    """
     from google.genai import types
 
     # Compress image to prevent Gemini API 1024KB Part size limit error
     compressed_bytes, compressed_mime = compress_image_bytes(image_bytes, max_size=800, quality=75)
 
-    prompt = """อ่านบิล/ใบเสร็จสั่งของในรูปนี้ แล้วตอบกลับเป็น JSON array เท่านั้น
-ห้ามมีข้อความอื่นนอกเหนือจาก JSON ในรูปแบบนี้:
-[{"name": "ชื่อสินค้า", "qty": จำนวน, "unit_cost": ราคาต่อหน่วย}]
-ถ้าอ่านตัวเลขไม่ชัด ให้ใส่ค่าที่อ่านได้ใกล้เคียงที่สุด"""
+    prompt = """อ่านบิล/ใบเสร็จรับเงิน (Invoice / Receipt) ในรูปนี้ แล้วตอบกลับเป็น JSON array เท่านั้น
+ห้ามมีข้อความอื่นนอกเหนือจาก JSON (ห้ามใช้ Markdown fence รอบ JSON)
 
-    # Multi-Key + Multi-Model fallback (primary gemini-3.6-flash -> backup gemini-3.5-flash)
+โครงสร้าง JSON ต่อรายการสินค้า (ภาษาไทย) ตามนี้:
+[{
+  "name": "ชื่อสินค้า (อ่านให้เต็ม อย่าตัดทอน)",
+  "qty": จำนวนชิ้น/หน่วย (ตัวเลขเท่านั้น),
+  "unit_price": ราคาต่อหน่วย (บาท ตัวเลขเท่านั้น),
+  "price": ราคารวมของรายการนี้ = qty x unit_price (บาท ตัวเลขเท่านั้น)
+}]
+
+เงื่อนไข:
+- ส่วนลด / ค่าขนส่ง / ยอดรวมท้ายบิล ห้ามนำมาเป็นแถวรายการสินค้า
+- สินค้าซ้ำกัน ให้รวมเป็นแถวเดียว (รวม qty และ price)
+- ถ้าอ่านตัวเลขไม่ชัด ให้ใส่ค่าที่อ่านได้ใกล้เคียงที่สุด ห้ามใส่ค่าติดลบ
+- ตอบกลับเป็น JSON array เดี่ยวเท่านั้น"""
+
+    # Vision/OCR fallback (gemini-2.5-flash -> gemini-1.5-flash)
     text = _gemini_generate(
         [prompt, types.Part.from_bytes(data=compressed_bytes, mime_type=compressed_mime)],
-        primary_model="gemini-3.6-flash",
-        backup_model="gemini-3.5-flash"
+        primary_model="gemini-2.5-flash",
+        backup_model="gemini-1.5-flash"
     )
     if not text:
         raise HTTPException(status_code=500, detail="Gemini API Error: ไม่สามารถอ่านบิลได้ (ทุก API Key ล้มเหลว)")
@@ -234,14 +262,26 @@ def call_gemini_ocr(image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
         items = json.loads(json_str)
         cleaned = []
         for item in items:
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            qty = float(item.get("qty", item.get("quantity", 1)))
+            unit_price = float(item.get("unit_price", item.get("unit_cost", item.get("price_per_unit", 0))) or 0)
+            line_total = float(item.get("price", item.get("line_total", item.get("total", 0))) or 0)
+            if line_total <= 0:
+                line_total = qty * unit_price
             cleaned.append({
-                "name": str(item.get("name", "")).strip(),
-                "qty": float(item.get("qty", 1)),
-                "unit_cost": float(item.get("unit_cost", 0)),
+                "name": name,
+                "qty": qty,
+                "unit_cost": unit_price,
+                "price": line_total,
+                "line_total": line_total,
             })
+        if not cleaned:
+            raise HTTPException(status_code=500, detail="ไม่พบรายการสินค้าในบิล")
         return cleaned
     except Exception:
-        raise HTTPException(status_code=500, detail=f"ไม่สามารถแปลงผลลัพธ์จาก AI เป็น JSON ได้: {text}")
+        raise HTTPException(status_code=500, detail=f"ไม่สามารถแปลงผลลัพธ์จาก AI เป็น JSON ได้: {text[:500]}")
 
 
 # ============================================================
@@ -345,11 +385,11 @@ async def scan_product(file: UploadFile = File(...)):
   "suggested_location": ""
 }"""
 
-    # Multi-Key + Multi-Model fallback (primary gemini-3.6-flash -> backup gemini-3.5-flash)
+    # Vision/OCR fallback (gemini-2.5-flash -> gemini-1.5-flash)
     text = _gemini_generate(
         [prompt, types.Part.from_bytes(data=compressed_bytes, mime_type=compressed_mime)],
-        primary_model="gemini-3.6-flash",
-        backup_model="gemini-3.5-flash"
+        primary_model="gemini-2.5-flash",
+        backup_model="gemini-1.5-flash"
     )
     if text:
         text = text.strip()
@@ -388,6 +428,7 @@ async def add_product_direct(
     sku: str = Form(None),
     image_path: str = Form(None),
     location_image_path: str = Form(None),
+    performed_by: str = Form("staff"),
     file: UploadFile = File(None),
     location_file: UploadFile = File(None),
 ):
@@ -395,6 +436,7 @@ async def add_product_direct(
     เพิ่มสินค้าใหม่เข้าคลัง (รวมรูปสินค้า + รูปถ่ายตำแหน่งในโกดัง)
     รองรับทั้งอัปโหลดไฟล์ตรง (file) และส่ง URL ที่อัปโหลดแล้ว (image_path)
     รองรับการแยกสต็อก: front_stock (หน้าร้าน) + warehouse_stock (คลังหลังร้าน)
+    performed_by: ใช้บันทึก Audit Log ว่าใครเป็นคนเพิ่ม (owner/staff)
     """
     final_image_url = image_path
     if file and file.filename:
@@ -419,6 +461,7 @@ async def add_product_direct(
         min_stock=min_stock,
         front_stock=front_stock,
         warehouse_stock=warehouse_stock,
+        performed_by=performed_by or "staff",
     )
     return {"status": "ok", "product_id": product_id, "name": name}
 
@@ -440,6 +483,7 @@ async def update_product_staff_route(
     sku: str = Form(None),
     image_path: str = Form(None),
     location_image_path: str = Form(None),
+    performed_by: str = Form(None),
     file: UploadFile = File(None),
     location_file: UploadFile = File(None),
 ):
@@ -512,7 +556,7 @@ async def update_product_staff_route(
     if location_file and location_file.filename:
         update_data["location_image_path"] = await save_uploaded_file(location_file, LOCATION_IMAGES_DIR, prefix="loc")
 
-    crud.update_product_staff(product_id, **update_data)
+    crud.update_product_staff(product_id, performed_by=performed_by or "staff", **update_data)
     return {"status": "ok", "message": "อัปเดตเรียบร้อย"}
 
 
@@ -520,16 +564,17 @@ async def update_product_staff_route(
 def transfer_stock_route(product_id: int, payload: dict):
     """
     ย้ายสต็อกระหว่างหน้าร้าน (front_stock) กับคลังหลังร้าน (warehouse_stock)
-    payload: {"qty": 5, "direction": "to_front" | "to_warehouse"}
+    payload: {"qty": 5, "direction": "to_front" | "to_warehouse", "performed_by": "owner"|"staff"}
     """
     qty = int(payload.get("qty", 0) or 0)
     direction = payload.get("direction", "to_front")
+    performed_by = payload.get("performed_by", "staff") or "staff"
 
     if qty <= 0:
         raise HTTPException(status_code=400, detail="กรุณาระบุจำนวนที่มากกว่า 0")
 
     try:
-        result = crud.transfer_stock(product_id, qty, direction)
+        result = crud.transfer_stock(product_id, qty, direction, performed_by=performed_by)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -549,21 +594,79 @@ def list_pending_products_staff():
 @app.post("/api/staff/checkout")
 async def checkout_staff(payload: dict):
     """
-    ประมวลผลการชำระเงินหน้าร้านจากระบบตะกร้า (Cart) และตัดสต็อกสินค้าในคลัง
+    ประมวลผลการชำระเงินหน้าร้านจากระบบตะกร้า (Cart) และตัดสต็อกสินค้าในคลัง พร้อมบันทึกลงตาราง sales
     """
     cart_items = payload.get("items", [])
     payment_type = payload.get("payment_type", "cash")
     total_amount = float(payload.get("total_amount", 0.0))
+    received_amount = float(payload.get("received_amount", total_amount))
+    change_amount = float(payload.get("change_amount", 0.0))
+    sold_by = str(payload.get("sold_by", "staff"))
 
     if not cart_items:
         raise HTTPException(status_code=400, detail="ไม่มีรายการสินค้าในตะกร้า")
 
     try:
-        result = crud.process_checkout(cart_items, payment_type=payment_type, total_amount=total_amount)
+        result = crud.process_checkout(
+            cart_items,
+            payment_type=payment_type,
+            total_amount=total_amount,
+            received_amount=received_amount,
+            change_amount=change_amount,
+            sold_by=sold_by
+        )
         return result
     except Exception as e:
-        # If DB fails, just return success with mock
-        return {"status": "ok", "sale_id": 1, "message": "บันทึกการขายสำเร็จ (Mock)", "total_amount": total_amount, "items_count": len(cart_items)}
+        logger.error(f"Checkout error: {e}")
+        raise HTTPException(status_code=500, detail=f"เกิดข้อผิดพลาดในการบันทึกการขาย: {e}")
+
+
+@app.get("/api/owner/sales")
+def get_owner_sales(limit: int = 100, keyword: str = Query(None)):
+    """รายงานประวัติการขายทั้งหมด (บิลขาย) สำหรับหน้า Reports"""
+    try:
+        return crud.list_sales(limit=limit, keyword=keyword)
+    except Exception as e:
+        logger.error(f"Error fetching sales: {e}")
+        return []
+
+
+@app.get("/api/owner/sales/summary")
+def get_owner_sales_summary():
+    """สรุปยอดขาย (วันนี้ และ ยอดรวมทั้งหมด)"""
+    try:
+        return crud.get_sales_summary()
+    except Exception as e:
+        logger.error(f"Error fetching sales summary: {e}")
+        return {"today_sales": 0, "today_orders": 0, "total_sales": 0, "total_orders": 0, "total_items_sold": 0}
+
+
+@app.get("/api/owner/sales/today")
+def get_today_sales_report(keyword: str = Query(None)):
+    """
+    รายงานยอดขายของวันนี้ (Today's Sales)
+    อ่านจากตาราง sales / transactions เท่านั้น — ห้ามเอาสินค้าที่เพิ่งเพิ่มเข้าคลังมาแสดง
+    คืนค่า: ยอดขายรวม, จำนวนบิล, จำนวนชิ้นที่ขายได้, รายการสินค้าที่ขายได้จริงวันนี้, และบิลของวันนี้
+    """
+    try:
+        return crud.get_today_sales_summary(keyword=keyword)
+    except Exception as e:
+        logger.error(f"Error fetching today sales: {e}")
+        try:
+            return crud.get_today_sales_summary(keyword=keyword)
+        except Exception:
+            return {"date": "", "total_sales": 0, "total_orders": 0, "total_items_sold": 0, "items": [], "bills": []}
+
+
+@app.post("/api/audit-log")
+def log_audit_action(payload: dict):
+    """API สำหรับบันทึกกิจกรรมในหน้าเว็บ ทั้ง Owner และ Staff"""
+    action_type = payload.get("action_type", "ACTIVITY")
+    description = payload.get("description", "")
+    performed_by = payload.get("performed_by", "staff")
+    if description:
+        crud.add_audit_log(action_type, description, performed_by)
+    return {"status": "ok"}
 
 
 
@@ -596,12 +699,12 @@ def get_owner_products(
 
 
 @app.delete("/api/owner/products/{product_id}")
-def delete_owner_product(product_id: int):
+def delete_owner_product(product_id: int, performed_by: str = Query("owner")):
     """
     Owner ลบสินค้า
     """
     try:
-        crud.delete_product_staff(product_id)
+        crud.delete_product_staff(product_id, performed_by=performed_by or "owner")
         return {"status": "ok", "deleted_id": product_id}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -612,12 +715,12 @@ def delete_owner_product(product_id: int):
 
 @app.delete("/api/staff/products/{product_id}")
 @app.post("/api/staff/products/{product_id}/delete")
-def delete_staff_product(product_id: int):
+def delete_staff_product(product_id: int, performed_by: str = Query("staff")):
     """
     Staff ลบสินค้าออกจากคลัง
     """
     try:
-        crud.delete_product_staff(product_id)
+        crud.delete_product_staff(product_id, performed_by=performed_by or "staff")
         return {"status": "ok", "deleted_id": product_id}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -646,13 +749,15 @@ async def upload_receipt(
     receipt_no: str = Form(None),
 ):
     """Phase A: เจ้าของร้านอัปโหลดรูปบิลสั่งของ -> AI OCR อ่านรายการ"""
-    image_url = await save_uploaded_file(file, RECEIPT_IMAGES_DIR, prefix="receipt")
     image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="ไม่พบข้อมูลรูปภาพบิล")
     file.file.seek(0)
+    image_url = await save_uploaded_file(file, RECEIPT_IMAGES_DIR, prefix="receipt")
     
     ocr_items = call_gemini_ocr(image_bytes, file.content_type or "image/jpeg")
 
-    total_amount = sum(item["qty"] * item["unit_cost"] for item in ocr_items)
+    total_amount = sum(item.get("line_total") or (item["qty"] * item["unit_cost"]) for item in ocr_items)
     receipt_id = crud.create_receipt(
         image_path=image_url,
         receipt_date=receipt_date,
@@ -669,8 +774,16 @@ async def upload_receipt(
             ocr_name=item["name"],
             qty=item["qty"],
             unit_cost=item["unit_cost"],
+            line_total=item.get("line_total") or (item["qty"] * item["unit_cost"]),
         )
-        created_products.append({"product_id": pid, "ocr_name": item["name"]})
+        created_products.append({
+            "product_id": pid,
+            "ocr_name": item["name"],
+            "qty": item["qty"],
+            "unit_cost": item["unit_cost"],
+            "total": item.get("line_total") or (item["qty"] * item["unit_cost"]),
+            "cost_price": item["unit_cost"],
+        })
 
     return {
         "status": "ok",
@@ -873,7 +986,7 @@ def verify_boss_pin(payload: dict):
     """ตรวจสอบ PIN Code สำหรับเข้าโหมด Boss/Owner"""
     pin = payload.get("pin", "")
     if pin == BOSS_PIN:
-        crud.add_audit_log("เข้าโหมด Boss", "เข้าสู่โหมด Owner/Boss สำเร็จ", "staff")
+        crud.add_audit_log("เข้าโหมด Boss", "เข้าสู่โหมด Owner/Boss สำเร็จ", "owner")
         return {"status": "ok", "verified": True}
     return {"status": "error", "verified": False, "message": "PIN ไม่ถูกต้อง"}
 
@@ -883,10 +996,13 @@ def verify_boss_pin(payload: dict):
 # ============================================================
 
 @app.get("/api/owner/audit-logs")
-def get_audit_logs(limit: int = Query(100)):
-    """ดึง Audit Log (ต้องยืนยัน PIN ก่อน)"""
+def get_audit_logs(limit: int = Query(100), user: str = Query(None), keyword: str = Query(None)):
+    """ดึง Audit Log (ต้องยืนยัน PIN ก่อน)
+    - user: "all" / "owner" / "staff" — Owner/Admin ดูประวัติการกระทำของทุกคน (รวมทั้งตัวเอง)
+    - keyword: ค้นหาจาก action_type / description / performed_by
+    """
     try:
-        logs = crud.get_audit_logs(limit=limit)
+        logs = crud.get_audit_logs(limit=limit, user=user, keyword=keyword)
         return logs
     except Exception as e:
         print(f"Audit log error: {e}")
@@ -916,11 +1032,11 @@ async def generate_product_spec(payload: dict):
 
 เขียนให้กระชับ ตรงประเด็น ใช้ศัพท์ช่างที่เข้าใจง่าย ประมาณ 3-5 ข้อ"""
 
-    # Multi-Key + Multi-Model fallback (primary gemini-3.6-flash -> backup gemini-3.5-flash)
+    # Multi-Key + Multi-Model fallback (primary gemini-2.5-flash -> backup gemini-2.0-flash)
     text = _gemini_generate(
         [prompt],
-        primary_model="gemini-3.6-flash",
-        backup_model="gemini-3.5-flash"
+        primary_model="gemini-2.5-flash",
+        backup_model="gemini-2.0-flash"
     )
     if text:
         cleaned = text.strip().replace("```json", "").replace("```", "").strip()
@@ -1086,11 +1202,11 @@ async def ai_sales_assistant(payload: dict):
 ถ้าเป็นคำถามคำนวณ ให้คำนวณและแสดงผลลัพธ์
 ถ้าไม่รู้จักสินค้า ให้บอกว่าไม่มีข้อมูลและแนะนำให้เช็คกับพนักงาน"""
 
-    # Multi-Key + Multi-Model fallback (primary gemini-3.6-flash -> backup gemini-3.5-flash)
+    # Multi-Key + Multi-Model fallback (primary gemini-2.5-flash -> backup gemini-2.0-flash)
     reply = _gemini_generate(
         [prompt],
-        primary_model="gemini-3.6-flash",
-        backup_model="gemini-3.5-flash"
+        primary_model="gemini-2.5-flash",
+        backup_model="gemini-2.0-flash"
     )
     if reply:
         return {"reply": reply.strip()}
@@ -1270,6 +1386,9 @@ def bulk_price_adjustment(payload: dict):
         msg = f"ปรับราคาสำเร็จ {updated} รายการ"
         if errors:
             msg += f" (มีข้อผิดพลาด {len(errors)} รายการ)"
+
+        # Audit Log: ปรับราคาสินค้ายกชุด (ทำโดย Owner)
+        crud.add_audit_log("ปรับราคายกชุด", f"ปรับราคาสินค้า {updated} รายการ (mode={mode}, value={value})", "owner")
 
         return {"updated": updated, "message": msg, "errors": errors[:10]}
 

@@ -111,6 +111,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
     performed_by    TEXT DEFAULT 'staff',
     created_at      TEXT DEFAULT (datetime('now', 'localtime'))
 );
+
+CREATE TABLE IF NOT EXISTS sales (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    receipt_no      TEXT,
+    total_amount    REAL DEFAULT 0,
+    received_amount REAL DEFAULT 0,
+    change_amount   REAL DEFAULT 0,
+    payment_type    TEXT DEFAULT 'cash',
+    items_json      TEXT,
+    items_count     INTEGER DEFAULT 0,
+    sold_by         TEXT DEFAULT 'staff',
+    created_at      TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
 """
 
 
@@ -152,6 +167,22 @@ def init_db():
             conn.execute("ALTER TABLE products ADD COLUMN min_stock INTEGER DEFAULT 5;")
         if "location" not in columns:
             conn.execute("ALTER TABLE products ADD COLUMN location TEXT DEFAULT '';")
+
+        # ตรวจสอบและสร้างตาราง sales สำหรับรายงานการขาย
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sales (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                receipt_no      TEXT,
+                total_amount    REAL DEFAULT 0,
+                received_amount REAL DEFAULT 0,
+                change_amount   REAL DEFAULT 0,
+                payment_type    TEXT DEFAULT 'cash',
+                items_json      TEXT,
+                items_count     INTEGER DEFAULT 0,
+                sold_by         TEXT DEFAULT 'staff',
+                created_at      TEXT DEFAULT (datetime('now', 'localtime'))
+            );
+        """)
 
         # Seed initial mock products if database is empty
         count_res = conn.execute("SELECT COUNT(*) as cnt FROM products;").fetchone()
