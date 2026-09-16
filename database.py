@@ -5,6 +5,7 @@ Database - จัดการการเชื่อมต่อ Supabase Postg
 
 import sqlite3
 import logging
+import threading
 from contextlib import contextmanager
 from config import DB_PATH, SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_ROLE_KEY
 
@@ -137,18 +138,45 @@ def get_connection():
     return conn
 
 
+# เก็บ connection ปัจจุบันของแต่ละ thread เพื่อให้ db_session() ซ้อนกันได้อย่างปลอดภัย
+_tls = threading.local()
+
+
 @contextmanager
 def db_session():
-    """Context manager สำหรับ SQLite transaction"""
-    conn = get_connection()
+    """Context manager สำหรับ SQLite transaction (รองรับการเรียกซ้อนกันได้อย่างปลอดภัย)
+
+    - ชั้นนอกสุด (outermost) จะ commit / rollback / close connection จริง
+    - ชั้นใน (nested) จะใช้ connection เดิมต่อทันที เพื่อกันปัญหา
+      "database is locked" เวลาที่โค้ดภายใน transaction เขียน audit log
+      หรือตารางอื่นเพิ่ม (เช่น บันทึกการขาย + audit log พร้อมกัน)
+    """
+    depth = getattr(_tls, "depth", 0)
+    outermost = (depth == 0)
+    if outermost or getattr(_tls, "conn", None) is None:
+        outermost = True
+        _tls.conn = get_connection()
+        depth = 0
+    conn = _tls.conn
+    _tls.depth = depth + 1
+
+    error = None
     try:
         yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
+    except Exception as e:
+        error = e
         raise
     finally:
-        conn.close()
+        _tls.depth = getattr(_tls, "depth", 1) - 1
+        if outermost:
+            try:
+                if error is None:
+                    conn.commit()
+                else:
+                    conn.rollback()
+            finally:
+                conn.close()
+                _tls.conn = None
 
 
 def init_db():
@@ -167,6 +195,14 @@ def init_db():
             conn.execute("ALTER TABLE products ADD COLUMN min_stock INTEGER DEFAULT 5;")
         if "location" not in columns:
             conn.execute("ALTER TABLE products ADD COLUMN location TEXT DEFAULT '';")
+        # is_complete = 0 สำหรับสินค้าที่สแกนบิลเข้ามาแต่ยังลงข้อมูลไม่ครบ (รอ Owner เติมรูป/ราคาขาย/SKU)
+        if "is_complete" not in columns:
+            conn.execute("ALTER TABLE products ADD COLUMN is_complete INTEGER DEFAULT 1;")
+            # สินค้า pending เดิม (จากระบบเก่า) ถือว่ายังลงไม่ครบด้วย
+            try:
+                conn.execute("UPDATE products SET is_complete = 0 WHERE status = 'pending';")
+            except Exception:
+                pass
 
         # ตรวจสอบและสร้างตาราง sales สำหรับรายงานการขาย
         conn.execute("""

@@ -89,6 +89,8 @@ let searchTimerStock = null;
 let searchTimerOwner = null;
 let searchTimerSales = null;
 let currentReportTab = 'sales';
+let currentStockFilter = 'all';   // 'all' | 'incomplete' (สินค้ายังลงไม่ครบ — Owner only)
+let financeChartInstance = null;
 let productsCache = [];
 
 // ==========================================================================
@@ -142,7 +144,7 @@ function switchView(view) {
     if (activeBnav) activeBnav.classList.add('active');
 
     if (view === 'pos') loadPOSProducts();
-    else if (view === 'stock') loadStockTable();
+    else if (view === 'stock') { refreshIncompleteBadge(); loadStockTable(); }
     else if (view === 'reports') loadOwnerReports();
 }
 
@@ -760,8 +762,15 @@ async function loadStockTable(keyword) {
 
     tbody.innerHTML = '<tr><td colspan="7" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลด...</td></tr>';
 
+    var showIncompleteOnly = (currentStockFilter === 'incomplete' && currentRole === 'owner');
+    var hint = document.getElementById('incomplete-hint');
+    if (hint) {
+        if (showIncompleteOnly) hint.classList.remove('hidden');
+        else hint.classList.add('hidden');
+    }
+
     try {
-        var url = '/api/staff/products?';
+        var url = showIncompleteOnly ? '/api/owner/products/incomplete?' : '/api/staff/products?';
         if (keyword) url += 'keyword=' + encodeURIComponent(keyword) + '&';
 
         var res = await fetch(url);
@@ -769,8 +778,10 @@ async function loadStockTable(keyword) {
         var products = await res.json();
 
         if (!products || products.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="empty">ไม่พบรายการสินค้า</td></tr>';
-            updateStockSummaryStats([]);
+            tbody.innerHTML = showIncompleteOnly
+                ? '<tr><td colspan="7" class="empty">🎉 ไม่มีสินค้าที่ยังลงไม่ครบ — ข้อมูลทุกชิ้นสมบูรณ์แล้ว</td></tr>'
+                : '<tr><td colspan="7" class="empty">ไม่พบรายการสินค้า</td></tr>';
+            updateStockSummaryStats(showIncompleteOnly ? [] : products || []);
             return;
         }
 
@@ -809,8 +820,13 @@ async function loadStockTable(keyword) {
                 locPhotoBtn = '<span style="color:var(--text-muted);font-size:11px">-</span>';
             }
 
+            var isIncomplete = (parseInt(p.is_complete) === 0) || (p.is_complete === false);
+            var incompleteBadge = isIncomplete
+                ? ' <span class="stock-tag" style="background:#fef3c7;color:#b45309;font-weight:700" title="ยังขาดรูปสินค้า/รูปตำแหน่ง/ราคาขาย/SKU"><i class="fa-solid fa-triangle-exclamation"></i> ยังลงไม่ครบ</span>'
+                : '';
+
             html += '<tr><td><div class="product-cell">' + thumbHtml +
-                '<div><div class="product-name-cell">' + name + '</div><div class="product-sku-cell">' + sku + '</div></div></div></td>' +
+                '<div><div class="product-name-cell">' + name + incompleteBadge + '</div><div class="product-sku-cell">' + sku + '</div></div></div></td>' +
                 '<td>' + cat + '</td>' +
                 '<td><code style="font-size:11px;color:var(--blue)">' + loc + '</code></td>' +
                 '<td class="c">' + stockTag + '</td>' +
@@ -831,39 +847,85 @@ async function loadStockTable(keyword) {
     }
 }
 
+/**
+ * สลับตัวกรองหน้าคลังสินค้า (Owner เท่านั้น)
+ * - 'all'        : สินค้าทั้งหมด
+ * - 'incomplete' : เฉพาะสินค้าที่ยังลงไม่ครบ (is_complete = 0) เพื่อกดปุ่มแก้ไขเติมข้อมูล
+ */
+function switchStockFilter(filter) {
+    if (filter !== 'all' && currentRole !== 'owner') {
+        showToast('ต้องเข้าสู่โหมด Owner เพื่อดูรายการสินค้าที่ยังลงไม่ครบ', 'error');
+        return;
+    }
+    currentStockFilter = (filter === 'incomplete') ? 'incomplete' : 'all';
+
+    var btnAll = document.getElementById('btn-stock-filter-all');
+    var btnInc = document.getElementById('btn-stock-filter-incomplete');
+    if (btnAll) btnAll.className = (currentStockFilter === 'all') ? 'btn-primary' : 'btn-outline';
+    if (btnInc) btnInc.className = (currentStockFilter === 'incomplete') ? 'btn-primary' : 'btn-outline';
+
+    var kwInput = document.getElementById('stock-search');
+    loadStockTable(kwInput ? kwInput.value.trim() : '');
+}
+
+/**
+ * อัปเดตตัวเลขบนป้าย "สินค้ายังลงไม่ครบ" ของหน้าคลังสินค้า
+ */
+async function refreshIncompleteBadge() {
+    var badge = document.getElementById('incomplete-count-badge');
+    if (!badge) return;
+    if (currentRole !== 'owner') {
+        badge.textContent = '0';
+        return;
+    }
+    try {
+        var res = await fetch('/api/owner/products/incomplete');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var list = await res.json();
+        badge.textContent = (list && list.length) ? list.length : 0;
+    } catch (e) {
+        badge.textContent = '0';
+    }
+}
+
 // ==========================================================================
 // OWNER: REPORTS & FINANCE
 // ==========================================================================
 
 function switchReportTab(tab) {
+    if (tab !== 'sales' && tab !== 'products' && tab !== 'finance') tab = 'sales';
     currentReportTab = tab;
-    var btnSales = document.getElementById('btn-tab-sales');
-    var btnProducts = document.getElementById('btn-tab-products');
-    var secSales = document.getElementById('sales-report-section');
-    var secProducts = document.getElementById('product-report-section');
-    var secTodayItems = document.getElementById('today-items-section');
-    var statsSales = document.getElementById('sales-stats-cards');
-    var statsProducts = document.getElementById('product-stats-cards');
 
-    if (tab === 'sales') {
-        if (btnSales) btnSales.className = 'btn-primary';
-        if (btnProducts) btnProducts.className = 'btn-outline';
-        if (secSales) secSales.classList.remove('hidden');
-        if (secProducts) secProducts.classList.add('hidden');
-        if (secTodayItems) secTodayItems.classList.remove('hidden');
-        if (statsSales) statsSales.classList.remove('hidden');
-        if (statsProducts) statsProducts.classList.add('hidden');
-        loadSalesReport();
-    } else {
-        if (btnSales) btnSales.className = 'btn-outline';
-        if (btnProducts) btnProducts.className = 'btn-primary';
-        if (secSales) secSales.classList.add('hidden');
-        if (secProducts) secProducts.classList.remove('hidden');
-        if (secTodayItems) secTodayItems.classList.add('hidden');
-        if (statsSales) statsSales.classList.add('hidden');
-        if (statsProducts) statsProducts.classList.remove('hidden');
-        loadProductProfitReport();
+    var tabs = ['sales', 'products', 'finance'];
+    var sections = {
+        sales: ['sales-report-section', 'today-items-section', 'sales-stats-cards'],
+        products: ['product-report-section', 'product-stats-cards'],
+        finance: ['finance-report-section', 'finance-stats-cards']
+    };
+    var buttons = {
+        sales: 'btn-tab-sales',
+        products: 'btn-tab-products',
+        finance: 'btn-tab-finance'
+    };
+
+    for (var i = 0; i < tabs.length; i++) {
+        var t = tabs[i];
+        var isActive = (t === tab);
+        var btn = document.getElementById(buttons[t]);
+        if (btn) btn.className = isActive ? 'btn-primary' : 'btn-outline';
+        var ids = sections[t] || [];
+        for (var j = 0; j < ids.length; j++) {
+            var el = document.getElementById(ids[j]);
+            if (el) {
+                if (isActive) el.classList.remove('hidden');
+                else el.classList.add('hidden');
+            }
+        }
     }
+
+    if (tab === 'sales') loadSalesReport();
+    else if (tab === 'products') loadProductProfitReport();
+    else loadFinanceReport(0);
 }
 
 async function loadSalesReport(keyword) {
@@ -873,7 +935,7 @@ async function loadSalesReport(keyword) {
 
     tbody.innerHTML = '<tr><td colspan="7" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลดยอดขายวันนี้...</td></tr>';
     var todayItemsBodyInit = document.getElementById('today-items-body');
-    if (todayItemsBodyInit) todayItemsBodyInit.innerHTML = '<tr><td colspan="4" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลด...</td></tr>';
+    if (todayItemsBodyInit) todayItemsBodyInit.innerHTML = '<tr><td colspan="3" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลด...</td></tr>';
 
     try {
         // รายงานยอดขายประจำวันนี้ (Today's Sales) — อ่านจากตาราง sales เท่านั้น
@@ -886,28 +948,27 @@ async function loadSalesReport(keyword) {
         var data = await res.json();
 
         // ---- อัปเดตการ์ดสรุปยอดขาย (วันนี้) ----
+        // หมายเหตุ: การ์ด "จำนวนบิลวันนี้" ถูกนำออกจากหน้าจอตามข้อกำหนดแล้ว
         var elTodaySales = document.getElementById('stat-sales-today');
-        var elTodayOrders = document.getElementById('stat-orders-today');
         var elTotalSales = document.getElementById('stat-sales-total');
         var elTotalItems = document.getElementById('stat-items-sold');
         if (elTodaySales) elTodaySales.textContent = '฿' + fmtMoney(data.total_sales || 0);
-        if (elTodayOrders) elTodayOrders.textContent = (data.total_orders || 0) + ' บิล';
         if (elTotalSales) elTotalSales.textContent = '฿' + fmtMoney(data.total_sales || 0);
         if (elTotalItems) elTotalItems.textContent = (data.total_items_sold || 0) + ' ชิ้น';
 
-        // ---- ตาราง: สินค้าที่ขายได้จริงวันนี้ (รวมแบบ Grouped ตามชื่อสินค้า) ----
+        // ---- ตาราง: สินค้าที่ขายได้จริงวันนี้ (แสดง 'ชื่อสินค้า' ไม่ใช่รหัส SKU) ----
         var todayItemsBody = document.getElementById('today-items-body');
         if (todayItemsBody) {
             var todayItems = data.items || [];
             if (todayItems.length === 0) {
-                todayItemsBody.innerHTML = '<tr><td colspan="4" class="empty">ยังไม่มีสินค้าที่ขายได้ในวันนี้</td></tr>';
+                todayItemsBody.innerHTML = '<tr><td colspan="3" class="empty">ยังไม่มีสินค้าที่ขายได้ในวันนี้</td></tr>';
             } else {
                 var ih = '';
                 for (var m = 0; m < todayItems.length; m++) {
                     var it = todayItems[m];
+                    var itemName = escHtml(it.name || 'สินค้าไม่ทราบชื่อ');
                     var qtyStr = String(Math.round(parseFloat(it.qty) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-                    ih += '<tr><td>' + escHtml(it.name) + '</td>' +
-                        '<td style="font-family:monospace;font-size:12px;color:var(--blue)">' + escHtml(it.sku || '-') + '</td>' +
+                    ih += '<tr><td style="font-weight:600">' + itemName + '</td>' +
                         '<td class="c" style="font-weight:600">' + qtyStr + ' ชิ้น</td>' +
                         '<td class="r" style="font-weight:700;color:var(--blue)">฿' + fmtMoney(it.revenue || 0) + '</td></tr>';
                 }
@@ -964,7 +1025,7 @@ async function loadSalesReport(keyword) {
         console.error('Sales report error:', err);
         tbody.innerHTML = '<tr><td colspan="7" class="empty" style="color:var(--red)">เกิดข้อผิดพลาดในการโหลดรายงานการขาย: ' + err.message + '</td></tr>';
         var eItems = document.getElementById('today-items-body');
-        if (eItems) eItems.innerHTML = '<tr><td colspan="4" class="empty">เกิดข้อผิดพลาด</td></tr>';
+        if (eItems) eItems.innerHTML = '<tr><td colspan="3" class="empty">เกิดข้อผิดพลาด</td></tr>';
     }
 }
 
@@ -1053,10 +1114,214 @@ async function loadProductProfitReport(keyword) {
 async function loadOwnerReports(keyword) {
     if (currentReportTab === 'sales') {
         await loadSalesReport(keyword);
-    } else {
+    } else if (currentReportTab === 'products') {
         await loadProductProfitReport(keyword);
+    } else {
+        await loadFinanceReport(0);
     }
 }
+
+// --------------------------------------------------------------------------
+// FINANCE REPORT (กราฟ Chart.js: ยอดขาย vs ต้นทุน vs กำไรสุทธิ)
+// --------------------------------------------------------------------------
+
+/**
+ * โหลดข้อมูลรายงานการเงินย้อนหลัง (คำนวณด้วยเขตเวลา Asia/Bangkok จากฝั่ง Backend)
+ * @param {number} days จำนวนวันย้อนหลัง (0/undefined = ใช้ค่าตาม period ที่เลือก)
+ */
+async function loadFinanceReport(days) {
+    if (currentRole !== 'owner') {
+        showToast('ต้องเข้าสู่โหมด Owner เพื่อดูรายงานการเงิน', 'error');
+        return;
+    }
+
+    var periodSel = document.getElementById('fin-period');
+    var period = (periodSel && periodSel.value === 'weekly') ? 'weekly' : 'daily';
+
+    var span = parseInt(days, 10);
+    if (isNaN(span) || span <= 0) span = (period === 'weekly') ? 56 : 14;
+
+    var tbody = document.getElementById('finance-body');
+    if (tbody) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลด...</td></tr>';
+    }
+
+    try {
+        var res = await fetch('/api/owner/finance/analytics?period=' + period + '&days=' + span);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var data = await res.json();
+
+        // ---- Stat Cards ----
+        var totals = data.totals || {};
+        var revEl = document.getElementById('stat-fin-revenue');
+        var costEl = document.getElementById('stat-fin-cost');
+        var profitEl = document.getElementById('stat-fin-profit');
+        var marginEl = document.getElementById('stat-fin-margin');
+        if (revEl) revEl.textContent = '฿' + fmtMoney(totals.revenue || 0);
+        if (costEl) costEl.textContent = '฿' + fmtMoney(totals.cost || 0);
+        if (profitEl) profitEl.textContent = '฿' + fmtMoney(totals.profit || 0);
+        if (marginEl) marginEl.textContent = (parseFloat(totals.margin_pct) || 0).toFixed(1) + '%';
+
+        // ---- ตารางสรุปรายช่วงเวลา ----
+        var rows = data.rows || [];
+        if (tbody) {
+            if (rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="empty">ยังไม่มีข้อมูลการขายในช่วงเวลานี้</td></tr>';
+            } else {
+                var html = '';
+                for (var i = 0; i < rows.length; i++) {
+                    var r = rows[i];
+                    var profitVal = parseFloat(r.profit) || 0;
+                    var profitColor = profitVal >= 0 ? 'var(--green)' : 'var(--red)';
+                    html += '<tr>' +
+                        '<td style="font-weight:600">' + escHtml(r.label || r.key || '-') + '</td>' +
+                        '<td class="c">' + (parseInt(r.bill_count, 10) || 0) + '</td>' +
+                        '<td class="c">' + (parseInt(r.qty, 10) || 0) + '</td>' +
+                        '<td class="r" style="font-family:\'Inter\',sans-serif;font-weight:700;color:var(--blue)">฿' + fmtMoney(r.revenue || 0) + '</td>' +
+                        '<td class="r" style="font-family:\'Inter\',sans-serif;color:var(--text-secondary)">฿' + fmtMoney(r.cost || 0) + '</td>' +
+                        '<td class="r" style="font-family:\'Inter\',sans-serif;font-weight:700;color:' + profitColor + '">฿' + fmtMoney(profitVal) + '</td></tr>';
+                }
+                tbody.innerHTML = html;
+            }
+        }
+
+        renderFinanceChart(data);
+    } catch (err) {
+        console.error('Finance report error:', err);
+        if (tbody) {
+            tbody.innerHTML = '<tr><td colspan="6" class="empty" style="color:var(--red)">เกิดข้อผิดพลาด: ' + err.message + '</td></tr>';
+        }
+        var emptyEl = document.getElementById('finance-chart-empty');
+        if (emptyEl) {
+            emptyEl.textContent = 'เกิดข้อผิดพลาดในการโหลดกราฟ: ' + err.message;
+            emptyEl.classList.remove('hidden');
+        }
+    }
+}
+
+/**
+ * วาดกราฟการเงินด้วย Chart.js
+ * - แท่ง (Bar): รายรับรวม / ต้นทุนสินค้าที่ขาย
+ * - เส้น (Line): กำไรสุทธิ
+ */
+function renderFinanceChart(data) {
+    var canvas = document.getElementById('finance-chart');
+    var emptyEl = document.getElementById('finance-chart-empty');
+    if (!canvas) return;
+
+    var labels = data.labels || [];
+    var revenue = data.revenue || [];
+    var cost = data.cost || [];
+    var profit = data.profit || [];
+
+    var hasData = false;
+    for (var i = 0; i < labels.length; i++) {
+        if ((parseFloat(revenue[i]) || 0) !== 0 || (parseFloat(cost[i]) || 0) !== 0) { hasData = true; break; }
+    }
+
+    if (typeof Chart === 'undefined') {
+        canvas.classList.add('hidden');
+        if (emptyEl) {
+            emptyEl.textContent = 'ไม่สามารถโหลด Chart.js ได้ (ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อแสดงกราฟ)';
+            emptyEl.classList.remove('hidden');
+        }
+        return;
+    }
+
+    if (!hasData) {
+        if (financeChartInstance) { financeChartInstance.destroy(); financeChartInstance = null; }
+        canvas.classList.add('hidden');
+        if (emptyEl) {
+            emptyEl.textContent = 'ยังไม่มีข้อมูลการขายในช่วงเวลานี้';
+            emptyEl.classList.remove('hidden');
+        }
+        return;
+    }
+
+    canvas.classList.remove('hidden');
+    if (emptyEl) emptyEl.classList.add('hidden');
+
+    if (financeChartInstance) { financeChartInstance.destroy(); financeChartInstance = null; }
+
+    financeChartInstance = new Chart(canvas.getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'รายรับ (บาท)',
+                    data: revenue,
+                    backgroundColor: 'rgba(59,130,246,0.75)',
+                    borderColor: '#3B82F6',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                    order: 2
+                },
+                {
+                    label: 'ต้นทุนสินค้า (บาท)',
+                    data: cost,
+                    backgroundColor: 'rgba(245,158,11,0.75)',
+                    borderColor: '#F59E0B',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                    order: 3
+                },
+                {
+                    label: 'กำไรสุทธิ (บาท)',
+                    type: 'line',
+                    data: profit,
+                    borderColor: '#10B981',
+                    backgroundColor: 'rgba(16,185,129,0.15)',
+                    borderWidth: 3,
+                    tension: 0.35,
+                    fill: false,
+                    pointRadius: 4,
+                    pointBackgroundColor: '#10B981',
+                    order: 1
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: {
+                        color: '#64748B',
+                        font: { family: "'Inter','Sarabun',sans-serif", size: 12 },
+                        usePointStyle: true
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function (ctx) {
+                            var v = parseFloat(ctx.parsed.y) || 0;
+                            return ctx.dataset.label + ': ฿' + v.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    grid: { display: false },
+                    ticks: { color: '#64748B', font: { family: "'Inter','Sarabun',sans-serif", size: 11 } }
+                },
+                y: {
+                    beginAtZero: true,
+                    grid: { color: 'rgba(148,163,184,0.2)' },
+                    ticks: {
+                        color: '#64748B',
+                        font: { family: "'Inter','Sarabun',sans-serif", size: 11 },
+                        callback: function (value) { return '฿' + Number(value).toLocaleString('th-TH'); }
+                    }
+                }
+            }
+        }
+    });
+}
+
 
 // ==========================================================================
 // ADD PRODUCT MODAL
@@ -2334,6 +2599,47 @@ function exportProductsExcel() {
     showToast('กำลังสร้างไฟล์ Excel...', 'success');
     window.location.href = '/api/owner/export-excel';
 }
+/**
+ * Export Excel แบบรู้บริบท (Context-aware)
+ * - หน้าคลังสินค้า  -> ข้อมูลสินค้าทั้งหมด (หรือเฉพาะสินค้าที่ยังลงไม่ครบถ้ากำลังกรองอยู่)
+ * - แท็บรายงานการขาย -> ประวัติการขาย (ขยายเป็นรายบรรทัดสินค้า)
+ * - แท็บวิเคราะห์กำไร -> ชื่อสินค้า, ราคาต้นทุนจากบิล, ราคาขาย, กำไรสุทธิ
+ * - แท็บรายงานการเงิน -> สรุปรายรับ ต้นทุน กำไรสุทธิ
+ */
+function exportContextualExcel() {
+    if (currentRole !== 'owner') {
+        showToast('ต้องเข้าสู่โหมด Owner เพื่อ Export Excel', 'error');
+        return;
+    }
+
+    var url = '/api/owner/export-excel';
+    var label = 'ข้อมูลสินค้าคงคลัง (ทั้งหมด)';
+
+    if (currentView === 'reports') {
+        if (currentReportTab === 'products') {
+            url = '/api/owner/export/profit';
+            label = 'วิเคราะห์กำไรและต้นทุนรายสินค้า';
+        } else if (currentReportTab === 'finance') {
+            var periodSel = document.getElementById('fin-period');
+            var period = (periodSel && periodSel.value === 'weekly') ? 'weekly' : 'daily';
+            var span = (period === 'weekly') ? 56 : 14;
+            url = '/api/owner/export/finance?days=' + span;
+            label = 'สรุปการเงินย้อนหลัง ' + span + ' วัน';
+        } else {
+            url = '/api/owner/export/sales';
+            label = 'รายงานการขาย (ประวัติบิล)';
+        }
+    } else if (currentView === 'stock' && currentStockFilter === 'incomplete') {
+        url = '/api/owner/export-excel?filter=incomplete';
+        label = 'สินค้าที่ยังลงข้อมูลไม่ครบ';
+    }
+
+    showToast('กำลังสร้างไฟล์ Excel: ' + label + '...', 'success');
+    sendAuditLog('EXPORT_EXCEL', 'เจ้าของร้าน (Owner) ได้ทำการ Export Excel: ' + label);
+    window.location.href = url;
+}
+
+
 
 // ==========================================================================
 // AUDIT LOG (เก็บบันทึกกิจกรรมทั้ง Owner และ Staff)

@@ -7,9 +7,67 @@ CRUD - ฟังก์ชันจัดการข้อมูลหลัก�
 from database import db_session, supabase_client, supabase_admin
 import logging
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("crud")
+
+
+# ============================================================
+# TIMEZONE (Asia/Bangkok, UTC+7)
+# ใช้คำนวณ "ยอดขายวันนี้" ให้ตรงกับเวลาประเทศไทยเสมอ
+# ============================================================
+
+BANGKOK_TZ = timezone(timedelta(hours=7))
+
+
+def bangkok_now() -> datetime:
+    """เวลาปัจจุบันตามเขตเวลาไทย (Asia/Bangkok)"""
+    return datetime.now(BANGKOK_TZ)
+
+
+def bangkok_today_str() -> str:
+    """วันที่ปัจจุบัน (YYYY-MM-DD) ตามเขตเวลาไทย (Asia/Bangkok)"""
+    return bangkok_now().strftime("%Y-%m-%d")
+
+
+def to_bangkok_date(value):
+    """แปลง timestamp จากฐานข้อมูล (str / datetime) ให้เป็นวันที่ตามเขตเวลาไทย (Asia/Bangkok)
+
+    - ถ้า timestamp มี timezone ติดมาด้วย (เช่น ISO จาก Supabase) จะแปลงตรงๆ
+    - ถ้าเป็น naive timestamp (SQLite datetime('now','localtime')) จะถือว่าเป็นเวลาเครื่อง server
+      แล้วปรับด้วย offset ของ server เพื่อให้ได้วันเวลาไทยที่ถูกต้อง
+    คืนค่าเป็น datetime.date หรือ None ถ้าแปลงไม่ได้
+    """
+    if not value:
+        return None
+
+    dt = None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        s = str(value).strip()
+        if not s:
+            return None
+        iso = s.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(iso)
+        except Exception:
+            dt = None
+        if dt is None:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                try:
+                    dt = datetime.strptime(s[:19].replace("T", " ").strip(), fmt)
+                    break
+                except Exception:
+                    dt = None
+        if dt is None:
+            return None
+
+    if dt.tzinfo is None:
+        # naive -> มองว่าเป็นเวลาท้องถิ่นของ server แล้วเทียบกับ UTC จริง
+        server_offset = datetime.now() - datetime.utcnow()
+        dt = (dt - server_offset).replace(tzinfo=timezone.utc)
+    return dt.astimezone(BANGKOK_TZ).date()
 
 # ============================================================
 # SUPABASE COLUMN COMPATIBILITY
@@ -25,13 +83,75 @@ SUPABASE_PRODUCT_COLUMNS = {
 
 # คอลัมน์เพิ่มเติมที่ต้องรัน migration ก่อน (002_add_missing_product_columns.sql)
 SUPABASE_MIGRATED_COLUMNS = {
-    "description", "min_stock", "location"
+    "description", "min_stock", "location", "is_complete"
 }
 
 # คอลัมน์ที่เพิ่มจาก Migration 003 (front_stock / warehouse_stock)
 SUPABASE_STOCK_COLUMNS = {
     "front_stock", "warehouse_stock"
 }
+
+# ตรวจสอบว่าคอลัมน์ is_complete มีอยู่จริงบน Supabase แล้วหรือยัง (migration 004)
+# None = ยังไม่ทราบผล, True/False = ทราบผลแล้ว (จำไว้ เพื่อไม่ยิง query ที่พังซ้ำ)
+_CLOUD_HAS_IS_COMPLETE = None
+
+
+def _cloud_is_complete_available() -> bool:
+    """ตรวจ (และจำผล) ว่าคอลัมน์ is_complete มีอยู่บน Supabase แล้วหรือยัง
+
+    ถ้ายังไม่ได้รัน supabase_migration.sql จะคืน False และระบบจะใช้ข้อมูลจาก SQLite local ต่อไป
+    """
+    global _CLOUD_HAS_IS_COMPLETE
+    if _CLOUD_HAS_IS_COMPLETE is not None:
+        return _CLOUD_HAS_IS_COMPLETE
+    if not supabase_admin:
+        _CLOUD_HAS_IS_COMPLETE = False
+        return False
+    try:
+        supabase_admin.from_("products").select("is_complete").limit(1).execute()
+        _CLOUD_HAS_IS_COMPLETE = True
+    except Exception as e:
+        logger.info(f"Supabase ยังไม่มีคอลัมน์ is_complete (ยังไม่รัน migration): {e}")
+        _CLOUD_HAS_IS_COMPLETE = False
+    return _CLOUD_HAS_IS_COMPLETE
+
+
+def _cloud_product_completion_map():
+    """คืนค่า {ชื่อสินค้าพิมพ์เล็ก: is_complete} ของสินค้าทั้งหมดบน Supabase
+
+    ใช้รวมรายการ 'ยังลงไม่ครบ' ระหว่าง Cloud + SQLite โดยไม่ให้ซ้ำกัน
+    และตัดสินค้าที่ Owner เติมข้อมูลครบแล้วบน Cloud ออกจากรายการของเครื่อง local
+    """
+    result = {}
+    if not supabase_admin:
+        return result
+    try:
+        if _cloud_is_complete_available():
+            res = supabase_admin.from_("products").select("name, is_complete").limit(2000).execute()
+        else:
+            res = supabase_admin.from_("products").select("name").limit(2000).execute()
+        for r in (res.data or []):
+            key = str(r.get("name") or "").strip().lower()
+            if not key:
+                continue
+            result[key] = bool(r.get("is_complete"))
+    except Exception as e:
+        logger.info(f"Supabase product completion map skipped: {e}")
+    return result
+
+
+def _cloud_row_to_local_shape(row: dict, with_cost: bool = True) -> dict:
+    """แปลงแถวสินค้าจาก Supabase ให้มีชื่อฟิลด์เหมือน SQLite (image_path / latest_cost ฯลฯ)"""
+    p = dict(row)
+    p["image_path"] = p.get("image_path") or p.get("image_url") or ""
+    p["location_image_path"] = p.get("location_image_path") or p.get("location_image_url") or ""
+    if with_cost:
+        p["latest_cost"] = float(p.get("latest_cost") or p.get("cost_price") or 0)
+    else:
+        p.pop("cost_price", None)
+        p.pop("latest_cost", None)
+    p["is_complete"] = 1 if p.get("is_complete") in (True, 1, "1", "true", "True") else 0
+    return p
 
 def _sanitize_supabase_payload(payload: dict, allowed_columns: set = None) -> dict:
     """
@@ -54,6 +174,14 @@ def _sanitize_supabase_payload_with_migration(payload: dict) -> dict:
 # ============================================================
 # AUDIT LOG (บันทึกประวัติกิจกรรมทั้ง Staff และ Owner)
 # ============================================================
+
+def _actor_name(performed_by: str = "staff") -> str:
+    """แปลง role เป็นชื่อผู้ใช้สำหรับแสดงใน Audit Log เช่น 'เจ้าของร้าน (Owner)'"""
+    by = str(performed_by or "staff").strip().lower()
+    if by in ("owner", "boss", "เจ้าของ", "เจ้าของร้าน"):
+        return "เจ้าของร้าน (Owner)"
+    return f"พนักงาน (Staff: {by})" if by and by != "staff" else "พนักงาน (Staff)"
+
 
 def add_audit_log(action_type: str, description: str, performed_by: str = "staff"):
     """บันทึก Audit Log อัตโนมัติ (บันทึกลงทั้ง SQLite และ Supabase ถ้าพร้อมใช้งาน)"""
@@ -367,7 +495,7 @@ def add_product_staff(name, sale_price=0, cost_price=0, category=None, sku=None,
             if res.data:
                 pid = res.data[0]["id"]
                 logger.info(f"[SUPABASE] Insert success! product_id={pid}")
-                add_audit_log("เพิ่มสินค้า", f"เพิ่มสินค้า '{name}' (SKU: {sku})", performed_by)
+                add_audit_log("ลงสินค้า", f"{_actor_name(performed_by)} ได้ทำการลงสินค้า '{name}' (SKU: {sku or 'ยังไม่ระบุ'})", performed_by)
                 return pid
             else:
                 logger.warning(f"[SUPABASE] Insert returned empty data. Response: {res}")
@@ -396,7 +524,7 @@ def add_product_staff(name, sale_price=0, cost_price=0, category=None, sku=None,
         except Exception:
             pass
 
-        add_audit_log("เพิ่มสินค้า", f"เพิ่มสินค้า '{name}' (SKU: {sku})", performed_by)
+        add_audit_log("ลงสินค้า", f"{_actor_name(performed_by)} ได้ทำการลงสินค้า '{name}' (SKU: {sku or 'ยังไม่ระบุ'})", performed_by)
 
         if location_code and location_image_path:
             conn.execute(
@@ -467,6 +595,42 @@ def update_product_staff(product_id: int, performed_by: str = "staff", **fields)
 
     if not filtered_fields:
         return
+
+    # Auto-Complete: ถ้าสินค้าเดิมยัง "ลงไม่ครบ" (is_complete = 0) และครั้งนี้มีการกรอก
+    # SKU + ราคาขาย (+ รูปสินค้า) ครบ ให้เปลี่ยนสถานะเป็นลงครบแล้ว (is_complete = 1)
+    try:
+        current = None
+        if supabase_admin:
+            try:
+                r = supabase_admin.from_("products").select("is_complete, image_url, sku, sale_price").eq("id", product_id).single().execute()
+                if r.data:
+                    current = {
+                        "is_complete": r.data.get("is_complete"),
+                        "image_path": r.data.get("image_url"),
+                        "sku": r.data.get("sku"),
+                        "sale_price": r.data.get("sale_price"),
+                    }
+            except Exception:
+                current = None
+        if current is None:
+            with db_session() as conn:
+                row = conn.execute(
+                    "SELECT is_complete, image_path, location_image_path, sku, sale_price FROM products WHERE id = ?",
+                    (product_id,),
+                ).fetchone()
+                if row is not None:
+                    current = dict(row)
+        if current is not None and not int(current.get("is_complete") or 0):
+            new_sku = filtered_fields.get("sku", current.get("sku"))
+            new_price = filtered_fields.get("sale_price", current.get("sale_price"))
+            new_img = filtered_fields.get("image_path", current.get("image_path"))
+            has_sku = bool(new_sku and str(new_sku).strip())
+            has_price = float(new_price or 0) > 0
+            has_img = bool(new_img)
+            if has_sku and has_price and has_img:
+                filtered_fields["is_complete"] = 1
+    except Exception as comp_err:
+        logger.warning(f"Auto-complete check skipped for product id={product_id}: {comp_err}")
 
     if supabase_admin:
         try:
@@ -686,15 +850,17 @@ def process_checkout(cart_items: list, payment_type: str = "cash", total_amount:
             total_qty += qty
 
             # ดึงข้อมูลสินค้าเพื่อเก็บในบิล
-            p = conn.execute("SELECT id, name, sku, sale_price, category FROM products WHERE id = ?", (pid,)).fetchone()
+            p = conn.execute("SELECT id, name, sku, sale_price, category, COALESCE(latest_cost, 0) AS latest_cost FROM products WHERE id = ?", (pid,)).fetchone()
             if p:
                 pname = p["name"]
                 price = float(p["sale_price"] or 0.0)
                 sku = p["sku"] or ""
+                unit_cost = float(p["latest_cost"] or 0.0)
             else:
                 pname = f"สินค้า id={pid}"
                 price = 0.0
                 sku = ""
+                unit_cost = 0.0
 
             items_detailed.append({
                 "product_id": pid,
@@ -702,6 +868,7 @@ def process_checkout(cart_items: list, payment_type: str = "cash", total_amount:
                 "sku": sku,
                 "qty": qty,
                 "price": price,
+                "unit_cost": unit_cost,
                 "line_total": price * qty
             })
 
@@ -724,6 +891,13 @@ def process_checkout(cart_items: list, payment_type: str = "cash", total_amount:
                         supabase_admin.from_("products").update({"stock_qty": new_stock}).eq("id", pid).execute()
                 except Exception as e:
                     logger.warning(f"Supabase checkout stock update failed for id={pid}: {e}")
+
+        # ถ้าฝั่งหน้าบ้านไม่ได้ส่งยอดรวมมา (หรือส่งมาเป็น 0) ให้คำนวณจากราคาสินค้าจริงในบิล
+        computed_total = sum(float(i["line_total"]) for i in items_detailed)
+        if float(total_amount or 0) <= 0:
+            total_amount = round(computed_total, 2)
+        if received_amount is None or float(received_amount or 0) <= 0:
+            received_amount = total_amount
 
         # บันทึกลงตาราง sales ใน SQLite
         items_json_str = json.dumps(items_detailed, ensure_ascii=False)
@@ -750,16 +924,14 @@ def process_checkout(cart_items: list, payment_type: str = "cash", total_amount:
             except Exception as sp_err:
                 logger.info(f"Supabase sales table insert skipped: {sp_err}")
 
-        item_names = [f"{it['name']} x{it['qty']}" for it in items_detailed[:3]]
-        items_summary = ", ".join(item_names)
-        if len(items_detailed) > 3:
-            items_summary += f" และอีก {len(items_detailed) - 3} รายการ"
-
-        add_audit_log(
-            "ขายสินค้า",
-            f"บิล {receipt_no}: ขาย {items_summary} (รวม ฿{total_amount:,.2f}) [{payment_type}]",
-            sold_by
-        )
+        # Audit Log: บันทึกทุกรายการที่ขาย ระบุผู้ขาย ชื่อสินค้า จำนวนชิ้น และยอดเงิน
+        sale_actor = _actor_name(sold_by)
+        for item in items_detailed:
+            add_audit_log(
+                "ขายสินค้า",
+                f"{sale_actor} ได้ทำการขายสินค้า '{item['name']}' จำนวน {int(item['qty'])} ชิ้น เป็นเงิน {item['line_total']:,.2f} บาท (บิล {receipt_no})",
+                sold_by
+            )
 
     return {
         "status": "ok",
@@ -857,16 +1029,40 @@ def get_sales_summary():
 # TODAY'S SALES REPORT (จากตาราง sales เท่านั้น - ข้อมูลจริงประจำวัน)
 # ============================================================
 
+def _sale_line_amount(sale: dict) -> float:
+    """คำนวณยอดเงินของบิล 1 ใบ
+
+    ใช้ total_amount ของบิลเป็นหลัก ถ้าบิลนั้นมียอดรวมเป็น 0 (ข้อมูลเก่า/บันทึกไม่ครบ)
+    จะคำนวณยอดจากผลรวมราคารวมของทุกรายการในบิล (line_total) ให้อัตโนมัติ
+    เพื่อไม่ให้ยอดขายขึ้น 0 บาท
+    """
+    items = sale.get("items") or []
+    lines_sum = 0.0
+    for it in items:
+        qty = float(it.get("qty") or 0)
+        line_total = float(it.get("line_total") or 0)
+        if line_total <= 0:
+            line_total = float(it.get("price") or 0) * qty
+        lines_sum += line_total
+    amount = float(sale.get("total_amount") or 0)
+    if amount <= 0:
+        amount = lines_sum
+    return round(amount, 2)
+
+
 def get_today_sales_summary(keyword: str = None):
     """
-    สรุปรายงานยอดขายของวันนี้ (Today's Sales)
+    สรุปรายงานยอดขายของวันนี้ (Today's Sales) ตามเขตเวลาไทย (Asia/Bangkok)
     อ่านจากตาราง sales / transactions เท่านั้น
     - ห้ามนำรายการสินค้าที่เพิ่งเพิ่มเข้าคลัง (products) มาแสดง
-    - คืนค่า: ยอดขายรวม, จำนวนบิล, จำนวนชิ้นที่ขายได้, รายการสินค้าที่ขายได้จริงวันนี้ (รวมแบบ Grouped), และรายการบิลวันนี้
+    - ยอดขายคำนวณจาก total_amount ของบิลจริง ถ้าบิลมียอด 0 จะคำนวณจากผลรวม line_total ของทุกรายการให้เอง
+    - คืนค่า: ยอดขายรวม, จำนวนบิล, จำนวนชิ้นที่ขายได้, รายการสินค้าที่ขายได้จริงวันนี้ (Grouped), และรายการบิลวันนี้
     """
     keyword = (keyword or "").strip().lower()
+    today_str = bangkok_today_str()
     today_data = {
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "date": today_str,
+        "timezone": "Asia/Bangkok",
         "total_sales": 0.0,
         "total_orders": 0,
         "total_items_sold": 0,
@@ -874,56 +1070,53 @@ def get_today_sales_summary(keyword: str = None):
         "bills": [],   # รายการบิลขายที่เกิดขึ้นวันนี้
     }
 
-    bills = None
+    bills = []
 
-    # 1) ลอง Supabase ก่อน (ถ้ามี cloud connection)
+    # 1) ลอง Supabase ก่อน (ถ้ามี cloud connection) — เทียบช่วงเวลาไทย -> UTC
     if supabase_admin:
         try:
-            today_start = datetime.now().strftime("%Y-%m-%dT00:00:00")
-            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+            day_start = datetime.strptime(today_str, "%Y-%m-%d").replace(tzinfo=BANGKOK_TZ)
+            day_end = day_start + timedelta(days=1)
             res = (
                 supabase_admin.from_("sales")
                 .select("*")
-                .gte("created_at", today_start)
-                .lt("created_at", tomorrow)
+                .gte("created_at", day_start.astimezone(timezone.utc).isoformat())
+                .lt("created_at", day_end.astimezone(timezone.utc).isoformat())
                 .order("created_at", desc=True)
                 .limit(500)
                 .execute()
             )
-            if res.data:
-                tmp = []
-                for r in res.data:
-                    items = []
-                    try:
-                        items = json.loads(r.get("items_json") or "[]")
-                    except Exception:
-                        pass
-                    r["items"] = items
-                    tmp.append(r)
-                bills = tmp
-        except Exception:
-            bills = None
+            for r in (res.data or []):
+                # กันคลาดเคลื่อนเรื่อง timezone — ตรวจซ้ำว่าเป็นวันนี้ (เวลาไทย) จริง
+                if str(to_bangkok_date(r.get("created_at"))) != today_str:
+                    continue
+                try:
+                    r["items"] = json.loads(r.get("items_json") or "[]")
+                except Exception:
+                    r["items"] = []
+                bills.append(r)
+        except Exception as sp_err:
+            logger.info(f"Supabase today sales query skipped: {sp_err}")
+            bills = []
 
-    # 2) SQLite local fallback
-    if bills is None:
+    # 2) SQLite local fallback (ดึงย้อนหลัง 3 วัน แล้วกรองตามวันที่เวลาไทย)
+    if not bills:
         try:
             with db_session() as conn:
                 rows = conn.execute(
                     """SELECT * FROM sales
-                       WHERE date(created_at) = date('now', 'localtime')
-                       ORDER BY created_at DESC LIMIT 500"""
+                       WHERE created_at >= datetime('now', 'localtime', '-3 days')
+                       ORDER BY created_at DESC LIMIT 1000"""
                 ).fetchall()
-                tmp = []
                 for r in rows:
                     d = dict(r)
-                    items = []
+                    if str(to_bangkok_date(d.get("created_at"))) != today_str:
+                        continue
                     try:
-                        items = json.loads(d.get("items_json") or "[]")
+                        d["items"] = json.loads(d.get("items_json") or "[]")
                     except Exception:
-                        pass
-                    d["items"] = items
-                    tmp.append(d)
-                bills = tmp
+                        d["items"] = []
+                    bills.append(d)
         except Exception as e:
             logger.warning(f"Failed to read today sales: {e}")
             bills = []
@@ -933,13 +1126,25 @@ def get_today_sales_summary(keyword: str = None):
 
     items_agg = {}
     for sale in bills:
-        today_data["total_sales"] += float(sale.get("total_amount") or 0)
+        sale_items = sale.get("items") or []
+        amount = _sale_line_amount(sale)
+        sale["total_amount"] = amount
+
+        qty_count = int(sale.get("items_count") or 0)
+        if qty_count <= 0:
+            qty_count = int(sum(float(i.get("qty") or 0) for i in sale_items))
+        sale["items_count"] = qty_count
+
+        today_data["total_sales"] += amount
         today_data["total_orders"] += 1
-        today_data["total_items_sold"] += int(sale.get("items_count") or 0)
-        for it in (sale.get("items") or []):
+        today_data["total_items_sold"] += qty_count
+
+        for it in sale_items:
             name = str(it.get("name") or "สินค้าไม่ทราบชื่อ").strip() or "สินค้าไม่ทราบชื่อ"
             qty = float(it.get("qty") or 0)
-            line_total = float(it.get("line_total") or 0) or (float(it.get("price") or 0) * qty)
+            line_total = float(it.get("line_total") or 0)
+            if line_total <= 0:
+                line_total = float(it.get("price") or 0) * qty
             agg = items_agg.get(name)
             if agg is None:
                 agg = {"name": name, "sku": it.get("sku") or "", "qty": 0.0, "revenue": 0.0}
@@ -947,9 +1152,17 @@ def get_today_sales_summary(keyword: str = None):
             agg["qty"] += qty
             agg["revenue"] += line_total
 
+    today_data["total_sales"] = round(today_data["total_sales"], 2)
     today_data["items"] = sorted(items_agg.values(), key=lambda x: -x["qty"])
 
     if keyword:
+        filtered_items = [
+            it for it in today_data["items"]
+            if keyword in str(it.get("name") or "").lower() or keyword in str(it.get("sku") or "").lower()
+        ]
+        if filtered_items:
+            today_data["items"] = filtered_items
+
         filtered_bills = []
         for b in bills:
             hay = " ".join([
@@ -965,6 +1178,10 @@ def get_today_sales_summary(keyword: str = None):
         today_data["bills"] = bills
 
     return today_data
+
+
+
+
 
 
 
@@ -1135,17 +1352,63 @@ def get_receipt_items(receipt_id: int):
         return [dict(r) for r in rows]
 
 
-def create_pending_product_from_receipt(receipt_id, ocr_name, qty, unit_cost, line_total=None):
-    """Phase A: สร้างสินค้าแบบ pending จากบิลสั่งซื้อ"""
+def create_pending_product_from_receipt(receipt_id, ocr_name, qty, unit_cost, line_total=None, performed_by="owner"):
+    """Phase A: สร้าง/รับเข้าสินค้าในคลังจากบิลสั่งซื้อ (สแกนด้วย AI OCR)
+
+    ใช้ข้อมูลจาก Gemini Vision เพียง 3 ค่า: ชื่อสินค้า, ราคาต้นทุน, จำนวนชิ้น
+    - ถ้าไม่พบสินค้าชื่อเดิม -> สร้างสินค้าใหม่ status='active' แต่ยังไม่ครบข้อมูล
+      โดยตั้ง flag is_complete = 0 (รอ Owner เติมรูปสินค้า/รูปตำแหน่ง/ราคาขาย/SKU ภายหลัง)
+    - ถ้ามีสินค้าชื่อเดิมอยู่แล้ว -> บวกสต็อกเพิ่มและอัปเดตต้นทุนล่าสุดให้ (ไม่สร้างรายการซ้ำ)
+
+    คืนค่า: dict {"product_id": int, "created": bool}
+    """
     if line_total is None:
         line_total = float(qty) * float(unit_cost)
+    qty = float(qty or 0)
+    unit_cost = float(unit_cost or 0)
+
+    product_id = None
+    created = False
+
     with db_session() as conn:
-        cur = conn.execute(
-            """INSERT INTO products (name, latest_cost, stock_qty, status)
-               VALUES (?, ?, ?, 'pending')""",
-            (ocr_name, unit_cost, qty),
-        )
-        product_id = cur.lastrowid
+        # 1) หาสินค้าชื่อเดิม (เทียบแบบไม่สนตัวพิมพ์เล็ก/ใหญ่ และตัดช่องว่างหัวท้าย)
+        try:
+            existing = conn.execute(
+                """SELECT id FROM products
+                   WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+                   ORDER BY id LIMIT 1""",
+                (ocr_name,),
+            ).fetchone()
+        except Exception:
+            existing = None
+
+        if existing:
+            product_id = existing["id"]
+            conn.execute(
+                """UPDATE products
+                   SET stock_qty = COALESCE(stock_qty, 0) + ?,
+                       latest_cost = ?,
+                       updated_at = datetime('now', 'localtime')
+                   WHERE id = ?""",
+                (qty, unit_cost, product_id),
+            )
+        else:
+            # 2) สร้างสินค้าใหม่ในคลังทันที แต่ยังลงไม่ครบ (is_complete = 0)
+            try:
+                cur = conn.execute(
+                    """INSERT INTO products (name, latest_cost, stock_qty, status, is_complete)
+                       VALUES (?, ?, ?, 'active', 0)""",
+                    (ocr_name, unit_cost, qty),
+                )
+            except Exception:
+                # เผื่อฐานข้อมูลยังไม่มีคอลัมน์ is_complete
+                cur = conn.execute(
+                    """INSERT INTO products (name, latest_cost, stock_qty, status)
+                       VALUES (?, ?, ?, 'active')""",
+                    (ocr_name, unit_cost, qty),
+                )
+            product_id = cur.lastrowid
+            created = True
 
         conn.execute(
             """INSERT INTO receipt_items (receipt_id, product_id, ocr_name, qty, unit_cost, line_total, matched)
@@ -1156,35 +1419,207 @@ def create_pending_product_from_receipt(receipt_id, ocr_name, qty, unit_cost, li
         conn.execute(
             """INSERT INTO cost_history (product_id, receipt_id, cost, note)
                VALUES (?, ?, ?, ?)""",
-            (product_id, receipt_id, unit_cost, "จากบิลสั่งของ (สร้างใหม่)"),
+            (product_id, receipt_id, unit_cost, "จากบิลสั่งของ (สแกนบิล)"),
         )
-        return product_id
+
+    if created:
+        add_audit_log(
+            "สแกนบิลลงสินค้า",
+            (f"{_actor_name(performed_by)} ได้ทำการสแกนบิลสินค้า '{ocr_name}' "
+             f"(รับเข้า {qty:g} ชิ้น ต้นทุน ฿{unit_cost:,.2f}) — สถานะ: ยังลงไม่ครบ (รอเติมรูป/ราคาขาย/SKU)"),
+            performed_by,
+        )
+    else:
+        add_audit_log(
+            "สแกนบิลลงสินค้า",
+            (f"{_actor_name(performed_by)} ได้ทำการสแกนบิลสินค้า '{ocr_name}' "
+             f"(สินค้ามีอยู่แล้ว รับเข้าเพิ่ม {qty:g} ชิ้น ต้นทุน ฿{unit_cost:,.2f})"),
+            performed_by,
+        )
+
+    # 3) Sync ขึ้น Supabase Cloud แบบ best-effort (ถ้ามีการเชื่อมต่อ)
+    #    เพื่อให้ทุกเครื่อง/พนักงานที่อ่านข้อมูลจาก Cloud มองเห็นสินค้าที่ยังลงไม่ครบเหมือนกัน
+    _sync_pending_product_to_cloud(ocr_name, unit_cost, product_id)
+
+    return {"product_id": product_id, "created": created}
+
+
+def _sync_pending_product_to_cloud(ocr_name, unit_cost, local_product_id):
+    """Sync สินค้าจากการสแกนบิลขึ้น Supabase (ถ้ามี Cloud) — ล้มเหลวได้โดยไม่กระทบการทำงานหลัก"""
+    if not supabase_admin:
+        return
+    try:
+        # สต็อกรวมล่าสุดจาก SQLite (กรณีเป็นสินค้าซ้ำที่เพิ่งบวกสต็อกไป)
+        total_stock = None
+        with db_session() as conn:
+            row = conn.execute(
+                "SELECT stock_qty, latest_cost FROM products WHERE id = ?", (local_product_id,)
+            ).fetchone()
+            if row is not None:
+                total_stock = int(row["stock_qty"] or 0)
+                unit_cost = float(row["latest_cost"] or unit_cost)
+        if total_stock is None:
+            return
+
+        payload = {
+            "name": ocr_name,
+            "cost_price": unit_cost,
+            "stock_qty": total_stock,
+            "status": "active",
+        }
+        if _cloud_is_complete_available():
+            payload["is_complete"] = False
+
+        found = (
+            supabase_admin.from_("products")
+            .select("id")
+            .ilike("name", ocr_name)
+            .limit(1)
+            .execute()
+        )
+        try:
+            if found.data:
+                supabase_admin.from_("products").update(payload).eq("id", found.data[0]["id"]).execute()
+            else:
+                supabase_admin.from_("products").insert(payload).execute()
+        except Exception:
+            # เผื่อคอลัมน์ is_complete ยังไม่มีบน Cloud -> ลองใหม่โดยไม่ส่งคอลัมน์นั้น
+            if "is_complete" not in payload:
+                raise
+            payload.pop("is_complete")
+            if found.data:
+                supabase_admin.from_("products").update(payload).eq("id", found.data[0]["id"]).execute()
+            else:
+                supabase_admin.from_("products").insert(payload).execute()
+    except Exception as sp_err:
+        logger.info(f"Supabase sync of scanned product skipped: {sp_err}")
+
+
+
+
 
 
 def list_pending_products():
-    """รายการสินค้า pending สำหรับหน้า 'รอเติมข้อมูล' (ไม่แสดงต้นทุน)"""
-    with db_session() as conn:
-        rows = conn.execute(
-            """SELECT id, name, stock_qty, created_at FROM products
-               WHERE status = 'pending'
-               ORDER BY created_at DESC"""
-        ).fetchall()
-        return [dict(r) for r in rows]
+    """รายการสินค้า 'ยังลงไม่ครบ' (is_complete = 0) สำหรับหน้า 'รอเติมข้อมูล'
+
+    - รวมข้อมูลจาก Supabase Cloud (ถ้ามี) + SQLite local โดยไม่ให้ซ้ำกัน (เทียบจากชื่อสินค้า)
+    - หมายเหตุ: ไม่ส่งราคาต้นทุน (latest_cost) ออกไป เพราะ endpoint นี้ถูกเรียกใช้จากฝั่ง Staff ด้วย
+    """
+    items = []
+    seen_names = set()
+
+    # 1) Supabase Cloud (ถ้ามีการเชื่อมต่อ + รัน migration แล้ว)
+    if supabase_admin and _cloud_is_complete_available():
+        try:
+            try:
+                res = (
+                    supabase_admin.from_("products")
+                    .select("*")
+                    .or_("is_complete.eq.false,status.eq.pending")
+                    .order("created_at", desc=True)
+                    .limit(500)
+                    .execute()
+                )
+            except Exception:
+                res = (
+                    supabase_admin.from_("products")
+                    .select("*")
+                    .eq("is_complete", False)
+                    .order("created_at", desc=True)
+                    .limit(500)
+                    .execute()
+                )
+            for r in (res.data or []):
+                p = _cloud_row_to_local_shape(r, with_cost=False)
+                key = str(p.get("name") or "").strip().lower()
+                if key and key in seen_names:
+                    continue
+                seen_names.add(key)
+                items.append(p)
+        except Exception as e:
+            logger.info(f"Supabase pending products query skipped: {e}")
+
+    # 2) SQLite local fallback (ตัดสินค้าที่เติมข้อมูลครบแล้วบน Cloud ออก)
+    completion = _cloud_product_completion_map()
+    try:
+        with db_session() as conn:
+            rows = conn.execute(
+                """SELECT id, name, sku, stock_qty, sale_price, category, location_code,
+                          image_path, created_at
+                   FROM products
+                   WHERE COALESCE(is_complete, 1) = 0 OR status = 'pending'
+                   ORDER BY created_at DESC"""
+            ).fetchall()
+            for r in rows:
+                p = dict(r)
+                key = str(p.get("name") or "").strip().lower()
+                if key and (key in seen_names or completion.get(key) is True):
+                    continue
+                seen_names.add(key)
+                items.append(p)
+    except Exception as e:
+        logger.warning(f"Failed to read pending products: {e}")
+
+    return items
+
+
+
+
 
 
 def complete_product(product_id, sale_price, location_code, image_path=None, location_image_path=None):
-    """Phase B: ครอบครัวเติมข้อมูลสินค้า pending ให้ครบ และเปลี่ยนสถานะเป็น active"""
+    """Phase B: เติมข้อมูลสินค้า pending ให้ครบ แล้วเปลี่ยนสถานะเป็น 'ลงครบแล้ว' (is_complete = 1)"""
     with db_session() as conn:
-        conn.execute(
-            """UPDATE products
-               SET sale_price = ?, location_code = ?, 
-                   image_path = COALESCE(?, image_path),
-                   location_image_path = COALESCE(?, location_image_path),
-                   status = 'active', updated_at = datetime('now','localtime')
-               WHERE id = ?""",
-            (sale_price, location_code, image_path, location_image_path, product_id),
+        try:
+            conn.execute(
+                """UPDATE products
+                   SET sale_price = ?, location_code = ?,
+                       image_path = COALESCE(?, image_path),
+                       location_image_path = COALESCE(?, location_image_path),
+                       status = 'active', is_complete = 1,
+                       updated_at = datetime('now','localtime')
+                   WHERE id = ?""",
+                (sale_price, location_code, image_path, location_image_path, product_id),
+            )
+        except Exception:
+            conn.execute(
+                """UPDATE products
+                   SET sale_price = ?, location_code = ?,
+                       image_path = COALESCE(?, image_path),
+                       location_image_path = COALESCE(?, location_image_path),
+                       status = 'active', updated_at = datetime('now','localtime')
+                   WHERE id = ?""",
+                (sale_price, location_code, image_path, location_image_path, product_id),
+            )
+        add_audit_log(
+            "เติมข้อมูลสินค้า",
+            f"เจ้าของร้าน (Owner) เติมข้อมูลสินค้านครบ (id={product_id}) — ราคาขาย ฿{float(sale_price or 0):,.2f}",
+            "owner",
         )
-        add_audit_log("เติมข้อมูลสินค้า", f"เติมข้อมูลสินค้า pending id={product_id}", "owner")
+
+    # Sync ขึ้น Supabase แบบ best-effort (ถ้ามี Cloud)
+    if supabase_admin:
+        try:
+            payload = {
+                "sale_price": sale_price,
+                "location_code": location_code,
+                "status": "active",
+            }
+            if image_path:
+                payload["image_url"] = image_path
+            if location_image_path:
+                payload["location_image_url"] = location_image_path
+            if _cloud_is_complete_available():
+                payload["is_complete"] = True
+            try:
+                supabase_admin.from_("products").update(payload).eq("id", product_id).execute()
+            except Exception:
+                if "is_complete" not in payload:
+                    raise
+                payload.pop("is_complete")
+                supabase_admin.from_("products").update(payload).eq("id", product_id).execute()
+        except Exception as sp_err:
+            logger.info(f"Supabase complete_product sync skipped: {sp_err}")
 
 
 def merge_pending_product(pending_id: int, active_id: int):
@@ -1223,3 +1658,259 @@ def merge_pending_product(pending_id: int, active_id: int):
         )
         conn.execute("DELETE FROM products WHERE id = ?", (pending_id,))
         add_audit_log("ยุบรวมสินค้า", f"ยุบรวม pending id={pending_id} เข้า active id={active_id}", "owner")
+
+
+def list_incomplete_products(keyword=None):
+    """รายการ 'สินค้ายังลงไม่ครบ' (is_complete = 0) สำหรับ Owner เท่านั้น
+
+    - ใช้ในแท็บ/ฟิลเตอร์หน้าคลังสินค้า เพื่อให้ Owner กดปุ่มแก้ไข (Modal) เติมรูปสินค้า,
+      รูปตำแหน่ง, ราคาขาย และรหัส SKU ภายหลังได้
+    - Owner เท่านั้นที่เห็นต้นทุน จึงคืนค่า latest_cost มาด้วย (สำหรับอ้างอิงตอนตั้งราคาขาย)
+    - ดึงทั้งจาก Supabase Cloud และ SQLite local แล้วรวมกันโดยไม่ซ้ำ (เทียบจากชื่อสินค้า)
+    """
+    keyword = (keyword or "").strip()
+    kw_lower = keyword.lower()
+    items = []
+    seen_names = set()
+
+    def _matches(p: dict) -> bool:
+        if not kw_lower:
+            return True
+        hay = " ".join([
+            str(p.get("name") or ""),
+            str(p.get("sku") or ""),
+            str(p.get("category") or ""),
+        ]).lower()
+        return kw_lower in hay
+
+    # 1) Supabase Cloud
+    if supabase_admin and _cloud_is_complete_available():
+        try:
+            try:
+                res = (
+                    supabase_admin.from_("products")
+                    .select("*")
+                    .or_("is_complete.eq.false,status.eq.pending")
+                    .order("created_at", desc=True)
+                    .limit(500)
+                    .execute()
+                )
+            except Exception:
+                res = (
+                    supabase_admin.from_("products")
+                    .select("*")
+                    .eq("is_complete", False)
+                    .order("created_at", desc=True)
+                    .limit(500)
+                    .execute()
+                )
+            for r in (res.data or []):
+                p = _cloud_row_to_local_shape(r, with_cost=True)
+                key = str(p.get("name") or "").strip().lower()
+                if key and key in seen_names:
+                    continue
+                seen_names.add(key)
+                items.append(p)
+        except Exception as e:
+            logger.info(f"Supabase incomplete products query skipped: {e}")
+
+    # 2) SQLite local (ตัดสินค้าที่เติมข้อมูลครบแล้วบน Cloud ออก)
+    completion = _cloud_product_completion_map()
+    try:
+        with db_session() as conn:
+            rows = conn.execute(
+                """SELECT id, sku, name, category, latest_cost, sale_price, stock_qty,
+                          location_code, location, image_path, location_image_path,
+                          status, COALESCE(is_complete, 1) AS is_complete, created_at
+                   FROM products
+                   WHERE COALESCE(is_complete, 1) = 0 OR status = 'pending'
+                   ORDER BY created_at DESC"""
+            ).fetchall()
+            for r in rows:
+                p = dict(r)
+                key = str(p.get("name") or "").strip().lower()
+                if key and (key in seen_names or completion.get(key) is True):
+                    continue
+                seen_names.add(key)
+                items.append(p)
+    except Exception as e:
+        logger.warning(f"Failed to read incomplete products: {e}")
+
+    result = []
+    for p in items:
+        if not _matches(p):
+            continue
+        stock = int(p.get("stock_qty") or 0)
+        cost = float(p.get("latest_cost") or 0)
+        sale = float(p.get("sale_price") or 0)
+        p["total_cost_val"] = round(cost * stock, 2)
+        p["profit"] = round(sale - cost, 2)
+        p["is_complete"] = int(p.get("is_complete") or 0)
+        result.append(p)
+    return result
+
+
+def _load_sales_for_range(days: int = 90):
+    """ดึงบิลขายย้อนหลัง N วัน (Supabase ถ้ามี + fallback SQLite) พร้อม parse items_json"""
+    bills = []
+    if supabase_admin:
+        try:
+            since = (bangkok_now() - timedelta(days=days)).astimezone(timezone.utc).isoformat()
+            res = (
+                supabase_admin.from_("sales")
+                .select("*")
+                .gte("created_at", since)
+                .order("created_at", desc=True)
+                .limit(3000)
+                .execute()
+            )
+            for r in (res.data or []):
+                try:
+                    r["items"] = json.loads(r.get("items_json") or "[]")
+                except Exception:
+                    r["items"] = []
+                bills.append(r)
+        except Exception as sp_err:
+            logger.info(f"Supabase sales range query skipped: {sp_err}")
+            bills = []
+
+    if not bills:
+        try:
+            with db_session() as conn:
+                rows = conn.execute(
+                    """SELECT * FROM sales
+                       WHERE created_at >= datetime('now', 'localtime', ?)
+                       ORDER BY created_at DESC LIMIT 3000""",
+                    (f"-{int(days)} days",),
+                ).fetchall()
+                for r in rows:
+                    d = dict(r)
+                    try:
+                        d["items"] = json.loads(d.get("items_json") or "[]")
+                    except Exception:
+                        d["items"] = []
+                    bills.append(d)
+        except Exception as e:
+            logger.warning(f"Failed to read sales range: {e}")
+    return bills
+
+
+def _product_cost_map():
+    """แผนที่ราคาต้นทุนล่าสุดของสินค้า: (cost_by_id, cost_by_name_lower)"""
+    cost_by_id = {}
+    cost_by_name = {}
+    try:
+        with db_session() as conn:
+            rows = conn.execute("SELECT id, name, COALESCE(latest_cost, 0) AS cost FROM products").fetchall()
+            for r in rows:
+                cost_by_id[int(r["id"])] = float(r["cost"] or 0)
+                cost_by_name[str(r["name"] or "").strip().lower()] = float(r["cost"] or 0)
+    except Exception as e:
+        logger.warning(f"Failed to build cost map: {e}")
+    return cost_by_id, cost_by_name
+
+
+def get_financial_analytics(period: str = "daily", days: int = 14):
+    """กราฟวิเคราะห์การเงิน: ยอดขายรวม vs ต้นทุน vs กำไรสุทธิ (รายวัน / รายสัปดาห์)
+
+    - period = 'daily'  -> ย้อนหลัง `days` วัน (ค่าเริ่มต้น 14 วัน)
+    - period = 'weekly' -> ย้อนหลัง 8 สัปดาห์
+    - ต้นทุนต่อหน่วยดึงจาก items_json (ถ้ามี unit_cost/cost) ถ้าไม่มีใช้ต้นทุนล่าสุดของสินค้า
+    - คำนวณตามเขตเวลา Asia/Bangkok
+    """
+    period = (period or "daily").strip().lower()
+    if period not in ("daily", "weekly"):
+        period = "daily"
+
+    today = bangkok_now().date()
+    buckets = []
+    key_map = {}
+
+    def _bucket_for(d):
+        if period == "weekly":
+            iso_year, iso_week, _ = d.isocalendar()
+            key = f"{iso_year}-W{iso_week:02d}"
+            start = d - timedelta(days=d.weekday())
+            label = f"สัปดาห์ {start.strftime('%d/%m')}"
+        else:
+            key = d.strftime("%Y-%m-%d")
+            label = d.strftime("%d/%m")
+        if key not in key_map:
+            b = {"key": key, "label": label, "revenue": 0.0, "cost": 0.0,
+                 "profit": 0.0, "qty": 0.0, "bill_count": 0}
+            key_map[key] = b
+            buckets.append(b)
+        return key_map[key]
+
+    if period == "weekly":
+        for i in range(7, -1, -1):
+            _bucket_for(today - timedelta(days=i * 7))
+        range_days = 56
+    else:
+        try:
+            days = int(days or 14)
+        except Exception:
+            days = 14
+        days = max(1, min(days, 90))
+        for i in range(days - 1, -1, -1):
+            _bucket_for(today - timedelta(days=i))
+        range_days = days
+
+    cutoff = today - timedelta(days=range_days)
+    cost_by_id, cost_by_name = _product_cost_map()
+    bills = _load_sales_for_range(days=range_days + 2)
+
+    for bill in bills:
+        bdate = to_bangkok_date(bill.get("created_at"))
+        if bdate is None or bdate < cutoff or bdate > today:
+            continue
+        bucket = _bucket_for(bdate)
+        items = bill.get("items") or []
+        bucket["bill_count"] += 1
+        bucket["revenue"] += _sale_line_amount(bill)
+
+        bill_cost = 0.0
+        for it in items:
+            qty = float(it.get("qty") or 0)
+            unit_cost = float(it.get("unit_cost") or it.get("cost") or 0)
+            if unit_cost <= 0:
+                pid = it.get("product_id")
+                if pid is not None and int(pid) in cost_by_id:
+                    unit_cost = cost_by_id[int(pid)]
+                else:
+                    unit_cost = cost_by_name.get(str(it.get("name") or "").strip().lower(), 0.0)
+            bill_cost += unit_cost * qty
+            bucket["qty"] += qty
+        bucket["cost"] += bill_cost
+
+    for b in buckets:
+        b["revenue"] = round(b["revenue"], 2)
+        b["cost"] = round(b["cost"], 2)
+        b["profit"] = round(b["revenue"] - b["cost"], 2)
+        b["qty"] = int(b["qty"])
+
+    totals = {
+        "revenue": round(sum(b["revenue"] for b in buckets), 2),
+        "cost": round(sum(b["cost"] for b in buckets), 2),
+        "profit": round(sum(b["profit"] for b in buckets), 2),
+        "qty": sum(b["qty"] for b in buckets),
+        "bill_count": sum(b["bill_count"] for b in buckets),
+    }
+    totals["margin_pct"] = round((totals["profit"] / totals["revenue"] * 100), 2) if totals["revenue"] > 0 else 0.0
+
+    return {
+        "period": period,
+        "timezone": "Asia/Bangkok",
+        "labels": [b["label"] for b in buckets],
+        "revenue": [b["revenue"] for b in buckets],
+        "cost": [b["cost"] for b in buckets],
+        "profit": [b["profit"] for b in buckets],
+        "qty": [b["qty"] for b in buckets],
+        "rows": buckets,
+        "totals": totals,
+    }
+
+
+def get_finance_summary(days: int = 30):
+    """สรุปภาพรวมรายรับ ต้นทุน และกำไรสุทธิย้อนหลัง N วัน (ใช้กับ Export Excel หน้ารายงานการเงิน)"""
+    return get_financial_analytics(period="daily", days=days)

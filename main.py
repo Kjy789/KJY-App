@@ -227,11 +227,14 @@ def call_gemini_ocr(image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
     prompt = """อ่านบิล/ใบเสร็จรับเงิน (Invoice / Receipt) ในรูปนี้ แล้วตอบกลับเป็น JSON array เท่านั้น
 ห้ามมีข้อความอื่นนอกเหนือจาก JSON (ห้ามใช้ Markdown fence รอบ JSON)
 
+ให้แกะข้อมูลจากบิลออกมาเฉพาะ 3 ค่าหลักต่อรายการสินค้า:
+1) ชื่อสินค้า  2) ราคาต้นทุนต่อหน่วย (Cost Price)  3) จำนวนชิ้น (Quantity)
+
 โครงสร้าง JSON ต่อรายการสินค้า (ภาษาไทย) ตามนี้:
 [{
   "name": "ชื่อสินค้า (อ่านให้เต็ม อย่าตัดทอน)",
   "qty": จำนวนชิ้น/หน่วย (ตัวเลขเท่านั้น),
-  "unit_price": ราคาต่อหน่วย (บาท ตัวเลขเท่านั้น),
+  "unit_price": ราคาต้นทุนต่อหน่วย (บาท ตัวเลขเท่านั้น),
   "price": ราคารวมของรายการนี้ = qty x unit_price (บาท ตัวเลขเท่านั้น)
 }]
 
@@ -239,6 +242,7 @@ def call_gemini_ocr(image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
 - ส่วนลด / ค่าขนส่ง / ยอดรวมท้ายบิล ห้ามนำมาเป็นแถวรายการสินค้า
 - สินค้าซ้ำกัน ให้รวมเป็นแถวเดียว (รวม qty และ price)
 - ถ้าอ่านตัวเลขไม่ชัด ให้ใส่ค่าที่อ่านได้ใกล้เคียงที่สุด ห้ามใส่ค่าติดลบ
+- ถ้าบิลไม่ระบุราคาต่อหน่วย ให้คำนวณจาก ราคารวม / จำนวนชิ้น
 - ตอบกลับเป็น JSON array เดี่ยวเท่านั้น"""
 
     # Vision/OCR fallback (gemini-2.5-flash -> gemini-1.5-flash)
@@ -747,14 +751,18 @@ async def upload_receipt(
     receipt_date: str = Form(None),
     supplier_name: str = Form(None),
     receipt_no: str = Form(None),
+    performed_by: str = Form("owner"),
 ):
-    """Phase A: เจ้าของร้านอัปโหลดรูปบิลสั่งของ -> AI OCR อ่านรายการ"""
+    """Phase A: เจ้าของร้านอัปโหลดรูปบิลสั่งของ -> Gemini Vision อ่านเฉพาะ
+    ชื่อสินค้า, ราคาต้นทุน (Cost Price) และจำนวนชิ้น (Quantity)
+    แล้วสร้างสินค้าเข้าคลังทันทีโดยตั้ง flag is_complete = 0 (ยังลงไม่ครบ)
+    """
     image_bytes = await file.read()
     if not image_bytes:
         raise HTTPException(status_code=400, detail="ไม่พบข้อมูลรูปภาพบิล")
     file.file.seek(0)
     image_url = await save_uploaded_file(file, RECEIPT_IMAGES_DIR, prefix="receipt")
-    
+
     ocr_items = call_gemini_ocr(image_bytes, file.content_type or "image/jpeg")
 
     total_amount = sum(item.get("line_total") or (item["qty"] * item["unit_cost"]) for item in ocr_items)
@@ -769,20 +777,23 @@ async def upload_receipt(
 
     created_products = []
     for item in ocr_items:
-        pid = crud.create_pending_product_from_receipt(
+        result = crud.create_pending_product_from_receipt(
             receipt_id=receipt_id,
             ocr_name=item["name"],
             qty=item["qty"],
             unit_cost=item["unit_cost"],
             line_total=item.get("line_total") or (item["qty"] * item["unit_cost"]),
+            performed_by=performed_by or "owner",
         )
         created_products.append({
-            "product_id": pid,
+            "product_id": result.get("product_id"),
+            "created": result.get("created", True),
             "ocr_name": item["name"],
             "qty": item["qty"],
             "unit_cost": item["unit_cost"],
             "total": item.get("line_total") or (item["qty"] * item["unit_cost"]),
             "cost_price": item["unit_cost"],
+            "is_complete": False,
         })
 
     return {
@@ -854,12 +865,24 @@ def export_stock_report_csv():
 
 
 @app.get("/api/owner/export-excel")
-def export_stock_report_excel():
-    """Export stock report as .xlsx - HORIZONTAL table with product thumbnail images"""
+def export_stock_report_excel(filter: str = Query(None)):
+    """Export stock report as .xlsx - HORIZONTAL table with product thumbnail images
+
+    filter=incomplete จะส่งออกเฉพาะสินค้าที่ยังลงข้อมูลไม่ครบ (is_complete = 0)
+    """
+    only_incomplete = (filter or "").strip().lower() in ("incomplete", "pending", "still-incomplete")
     try:
         data = crud.export_stock_report_data()
     except Exception:
         data = []
+
+    if only_incomplete:
+        try:
+            incomplete_ids = {str(p.get("id")) for p in crud.list_incomplete_products()}
+            data = [d for d in data if str(d.get("ID", "")) in incomplete_ids]
+        except Exception as e:
+            logger.error(f"Filter incomplete export error: {e}")
+
     try:
         import openpyxl
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -959,14 +982,226 @@ def export_stock_report_excel():
         wb.save(out)
         out.seek(0)
 
-        crud.add_audit_log("EXPORT_PRODUCTS_EXCEL", f"Export Excel (แนวนอน + รูปภาพ) {len(data)} รายการ", "owner")
+        if only_incomplete:
+            crud.add_audit_log(
+                "EXPORT_PRODUCTS_EXCEL",
+                f"เจ้าของร้าน (Owner) Export Excel เฉพาะ 'สินค้าที่ยังลงไม่ครบ' {len(data)} รายการ",
+                "owner",
+            )
+            out_name = "kjy_incomplete_products.xlsx"
+        else:
+            crud.add_audit_log(
+                "EXPORT_PRODUCTS_EXCEL",
+                f"เจ้าของร้าน (Owner) Export Excel ข้อมูลสินค้าคงคลัง (แนวนอน + รูปภาพ) {len(data)} รายการ",
+                "owner",
+            )
+            out_name = "kjy_stock_report.xlsx"
 
-        return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=kjy_stock_report.xlsx"})
+        return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f"attachment; filename={out_name}"})
     except ImportError:
         return export_stock_report_csv()
 
 
 
+
+
+# ============================================================
+# OWNER: สินค้ายังลงไม่ครบ (Incomplete Products) — Owner เท่านั้น
+# ============================================================
+
+@app.get("/api/owner/products/incomplete")
+def list_incomplete_products_owner(keyword: str = Query(None)):
+    """แท็บ/ฟิลเตอร์ 'สินค้ายังลงไม่ครบ' (is_complete = 0)
+
+    ใช้สำหรับ Owner กดปุ่มแก้ไข (Modal) เพื่อถ่ายรูปสินค้า, ถ่ายรูปตำแหน่ง,
+    ตั้งราคาขาย และใส่รหัส SKU เพิ่มเติมภายหลัง
+    """
+    try:
+        return crud.list_incomplete_products(keyword=keyword)
+    except Exception as e:
+        logger.error(f"List incomplete products error: {e}")
+        return []
+
+
+# ============================================================
+# OWNER: FINANCE ANALYTICS (กราฟรายงานการเงิน)
+# ============================================================
+
+@app.get("/api/owner/finance/analytics")
+def get_finance_analytics_route(period: str = Query("daily"), days: int = Query(14)):
+    """ข้อมูลกราฟวิเคราะห์การเงิน: ยอดขายรวม vs ต้นทุน vs กำไรสุทธิ (รายวัน/รายสัปดาห์)"""
+    try:
+        return crud.get_financial_analytics(period=period, days=days)
+    except Exception as e:
+        logger.error(f"Finance analytics error: {e}")
+        return {"period": period, "labels": [], "revenue": [], "cost": [], "profit": [],
+                "qty": [], "rows": [],
+                "totals": {"revenue": 0, "cost": 0, "profit": 0, "qty": 0, "bill_count": 0}}
+
+
+def _xlsx_response(title, headers, rows, filename, audit_desc):
+    """สร้างไฟล์ .xlsx จาก headers/rows (ถ้า openpyxl ไม่มี จะ fallback เป็น CSV)"""
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(headers)
+        for r in rows:
+            writer.writerow(r)
+        csv_bytes = "\ufeff" + output.getvalue()
+        return StreamingResponse(
+            io.BytesIO(csv_bytes.encode("utf-8")),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename={filename}.csv"},
+        )
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = (title or "Report")[:31]
+
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="2B5797", end_color="2B5797", fill_type="solid")
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin_border = Border(left=Side(style="thin"), right=Side(style="thin"),
+                         top=Side(style="thin"), bottom=Side(style="thin"))
+
+    for col_idx, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_alignment
+        cell.border = thin_border
+
+    for row_idx, row_vals in enumerate(rows, start=2):
+        for col_idx, val in enumerate(row_vals, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="center", wrap_text=False)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                cell.number_format = '#,##0.00' if isinstance(val, float) else '#,##0'
+
+    for col_idx, h in enumerate(headers, start=1):
+        body_len = max([len(str(r[col_idx - 1])) for r in rows] or [10])
+        width = max(12, min(38, max(len(str(h)) + 4, body_len + 3)))
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+    ws.freeze_panes = "A2"
+    if rows:
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{ws.max_row}"
+
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+
+    try:
+        crud.add_audit_log("EXPORT_EXCEL", audit_desc, "owner")
+    except Exception:
+        pass
+
+    return StreamingResponse(
+        out,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}.xlsx"},
+    )
+
+
+@app.get("/api/owner/export/sales")
+def export_sales_report_excel(keyword: str = Query(None)):
+    """Export เฉพาะประวัติรายการขายจริง (หน้ารายงานการขาย) — ขยายเป็นรายบรรทัดสินค้า"""
+    try:
+        data = crud.get_today_sales_summary(keyword=keyword)
+    except Exception:
+        data = {"bills": []}
+
+    headers = ["วันที่/เวลา", "เลขที่บิล", "ชื่อสินค้า", "จำนวน (ชิ้น)",
+               "ราคาต่อหน่วย (บาท)", "ราคารวม (บาท)", "ช่องทางชำระ", "ผู้ขาย"]
+    rows = []
+    for bill in data.get("bills", []):
+        pay = "โอน/QR" if bill.get("payment_type") == "qr" else "เงินสด"
+        seller = "เจ้าของร้าน" if bill.get("sold_by") == "owner" else "พนักงาน"
+        items = bill.get("items") or []
+        if not items:
+            rows.append([bill.get("created_at") or "-", bill.get("receipt_no") or "-", "-",
+                         0, 0.0, float(bill.get("total_amount") or 0), pay, seller])
+            continue
+        for it in items:
+            qty = float(it.get("qty") or 0)
+            line_total = float(it.get("line_total") or 0) or (float(it.get("price") or 0) * qty)
+            unit = float(it.get("unit_price") or 0)
+            if unit <= 0:
+                unit = (line_total / qty) if qty > 0 else 0.0
+            rows.append([
+                bill.get("created_at") or "-",
+                bill.get("receipt_no") or "-",
+                it.get("name") or "-",
+                qty,
+                round(unit, 2),
+                round(line_total, 2),
+                pay,
+                seller,
+            ])
+    return _xlsx_response("Sales Report", headers, rows, "kjy_sales_report",
+                          f"Export Excel รายงานการขาย {len(rows)} รายการ")
+
+
+@app.get("/api/owner/export/profit")
+def export_profit_report_excel():
+    """Export วิเคราะห์กำไร: ชื่อสินค้า, ราคาต้นทุน (จากบิล), ราคาขาย, กำไรสุทธิ"""
+    try:
+        products = crud.list_products_owner()
+    except Exception:
+        products = []
+
+    headers = ["ชื่อสินค้า", "SKU/Barcode", "หมวดหมู่", "ราคาต้นทุน (จากบิล)",
+               "ราคาขาย", "กำไรสุทธิต่อชิ้น", "อัตรากำไร %", "สต็อกคงเหลือ",
+               "มูลค่าต้นทุนรวม", "กำไรรวมถ้าขายหมด"]
+    rows = []
+    for p in products:
+        cost = float(p.get("latest_cost") or 0)
+        sale = float(p.get("sale_price") or 0)
+        stock = int(p.get("stock_qty") or 0)
+        profit = round(sale - cost, 2)
+        margin = round((profit / sale * 100), 2) if sale > 0 else 0.0
+        rows.append([
+            p.get("name") or "-",
+            p.get("sku") or "-",
+            p.get("category") or "-",
+            round(cost, 2),
+            round(sale, 2),
+            profit,
+            margin,
+            stock,
+            round(cost * stock, 2),
+            round(profit * stock, 2),
+        ])
+    return _xlsx_response("Profit Analysis", headers, rows, "kjy_profit_analysis",
+                          f"Export Excel วิเคราะห์กำไร {len(rows)} รายการ")
+
+
+@app.get("/api/owner/export/finance")
+def export_finance_report_excel(days: int = Query(30)):
+    """Export สรุปรายรับ ต้นทุน กำไรภาพรวม (หน้ารายงานการเงิน)"""
+    try:
+        data = crud.get_finance_summary(days=days)
+    except Exception:
+        data = {"rows": [], "totals": {}}
+
+    headers = ["วันที่", "ยอดขายรวม (รายรับ)", "ต้นทุนสินค้า", "กำไรสุทธิ",
+               "จำนวนชิ้นที่ขาย", "จำนวนบิล"]
+    rows = []
+    for r in data.get("rows", []):
+        rows.append([r.get("label") or r.get("key"), float(r.get("revenue") or 0),
+                     float(r.get("cost") or 0), float(r.get("profit") or 0),
+                     int(r.get("qty") or 0), int(r.get("bill_count") or 0)])
+    t = data.get("totals") or {}
+    rows.append(["รวมทั้งหมด", float(t.get("revenue") or 0), float(t.get("cost") or 0),
+                 float(t.get("profit") or 0), int(t.get("qty") or 0), int(t.get("bill_count") or 0)])
+
+    return _xlsx_response("Finance Summary", headers, rows, "kjy_finance_summary",
+                          f"Export Excel สรุปการเงิน {days} วัน")
 
 
 @app.get("/")

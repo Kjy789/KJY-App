@@ -43,3 +43,11 @@ SELECT column_name, data_type
 FROM information_schema.columns 
 WHERE table_name = 'products' 
 ORDER BY ordinal_position;
+-- ============================================================
+-- 9. Add is_complete column (Owner: สินค้ายังลงไม่ครบจากการสแกนบิล)
+--    is_complete = false รอ Owner เติมรูป/ราคาขาย/SKU ในภายหลัง
+-- ============================================================
+ALTER TABLE public.products
+ADD COLUMN IF NOT EXISTS is_complete BOOLEAN DEFAULT TRUE NOT NULL;
+
+UPDATE public.products SET is_complete = FALSE WHERE status = 'pending';

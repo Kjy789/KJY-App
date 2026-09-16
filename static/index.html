@@ -14,6 +14,8 @@
     <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <!-- Chart.js (กราฟวิเคราะห์การเงิน) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
     <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -108,7 +110,7 @@
                     <p class="sub">จัดการสต็อก เพิ่มสินค้าใหม่ ค้นหาตำแหน่ง</p>
                 </div>
                 <div class="hstack">
-                    <button class="btn-green owner-only hidden" onclick="exportProductsExcel()" title="ส่งออกรายงานสินค้าคลังเป็น Excel"><i class="fa-solid fa-file-excel"></i> 📊 Export Excel</button>
+                    <button class="btn-green owner-only hidden" onclick="exportContextualExcel()" title="ส่งออกข้อมูลของหน้าที่กำลังเปิดอยู่เป็น Excel"><i class="fa-solid fa-file-excel"></i> 📊 Export Excel</button>
                     <button class="btn-outline owner-only hidden" onclick="openImportModal()" title="นำเข้าสินค้าจาก Excel/CSV"><i class="fa-solid fa-file-import"></i> Import</button>
                     <button class="btn-outline owner-only hidden" onclick="openBulkPriceModal()" title="ปรับราคาสินค้ายกชุด"><i class="fa-solid fa-tags"></i> ปรับราคา</button>
                     <button class="btn-primary" onclick="openAddProduct()"><i class="fa-solid fa-plus"></i> เพิ่มสินค้า</button>
@@ -120,6 +122,22 @@
                     <input type="text" class="search-input" id="stock-search" placeholder="ค้นหาชื่อ, SKU, หมวดหมู่..." oninput="debounceSearch('stock')" autocomplete="off">
                     <button class="scan-btn" onclick="openScanner('stock')"><i class="fa-solid fa-barcode"></i></button>
                 </div>
+            </div>
+            <!-- ตัวกรองสินค้า: แท็บ 'สินค้ายังลงไม่ครบ' สำหรับ Owner เท่านั้น -->
+            <div class="hstack owner-only hidden" id="stock-filter-bar" style="gap:8px;flex-wrap:wrap;margin-bottom:12px">
+                <button class="btn-primary" id="btn-stock-filter-all" onclick="switchStockFilter('all')">
+                    <i class="fa-solid fa-list"></i> สินค้าทั้งหมด
+                </button>
+                <button class="btn-outline" id="btn-stock-filter-incomplete" onclick="switchStockFilter('incomplete')">
+                    <i class="fa-solid fa-triangle-exclamation"></i> สินค้ายังลงไม่ครบ
+                    <span id="incomplete-count-badge" style="display:inline-block;min-width:22px;padding:1px 6px;margin-left:4px;border-radius:10px;background:#dc2626;color:#fff;font-size:11px;font-weight:700">0</span>
+                </button>
+            </div>
+            <!-- คำอธิบายแท็บ 'สินค้ายังลงไม่ครบ' -->
+            <div class="owner-only hidden" id="incomplete-hint" style="margin-bottom:12px;padding:10px 14px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:13px;color:#92400e">
+                <i class="fa-solid fa-circle-info"></i>
+                รายการที่สแกนบิลเข้ามาแล้วแต่ยังขาดรูปสินค้า / รูปตำแหน่ง / ราคาขาย / รหัส SKU —
+                กดปุ่ม <i class="fa-solid fa-pen-to-square"></i> เพื่อเปิด Modal เติมข้อมูลให้ครบ (ระบบจะตั้งสถานะ "ลงครบแล้ว" ให้อัตโนมัติ)
             </div>
             <!-- สรุปจำนวนสินค้าและจำนวนชิ้นทั้งหมดในสต็อก -->
             <div class="stock-summary-bar" id="stock-summary-bar" style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:10px 16px;background:var(--card-bg, #fff);border:1px solid var(--border);border-radius:var(--radius-lg, 12px);font-size:13px">
@@ -187,8 +205,8 @@
                 </div>
                 <div class="hstack">
                     <button class="btn-outline" onclick="openAuditLog()"><i class="fa-solid fa-clock-rotate-left"></i> ดู Audit Log</button>
-                    <a href="/api/owner/export-excel" class="btn-green"><i class="fa-solid fa-file-excel"></i> Excel</a>
-                    <a href="/api/owner/export-csv" class="btn-outline"><i class="fa-solid fa-file-csv"></i> CSV</a>
+                    <button class="btn-green" onclick="exportContextualExcel()" title="ส่งออกข้อมูลของแท็บที่กำลังเปิดอยู่"><i class="fa-solid fa-file-excel"></i> 📊 Export Excel</button>
+                    <a href="/api/owner/export-csv" class="btn-outline" title="ส่งออกข้อมูลสินค้าทั้งคลังเป็น CSV"><i class="fa-solid fa-file-csv"></i> CSV</a>
                 </div>
             </div>
 
@@ -200,22 +218,32 @@
                 <button class="btn-outline" id="btn-tab-products" onclick="switchReportTab('products')">
                     <i class="fa-solid fa-chart-pie"></i> วิเคราะห์กำไรรายสินค้า
                 </button>
+                <button class="btn-outline" id="btn-tab-finance" onclick="switchReportTab('finance')">
+                    <i class="fa-solid fa-chart-line"></i> รายงานการเงิน &amp; กราฟ
+                </button>
             </div>
 
             <!-- Sales Stats (Shown on Sales Tab) -->
             <div class="stats" id="sales-stats-cards">
                 <div class="stat-card green"><div class="stat-icon"><i class="fa-solid fa-circle-dollar-to-slot"></i></div><div><small>ยอดขายวันนี้</small><h3 id="stat-sales-today">฿0</h3></div></div>
-                <div class="stat-card blue"><div class="stat-icon"><i class="fa-solid fa-receipt"></i></div><div><small>จำนวนบิลวันนี้</small><h3 id="stat-orders-today">0 บิล</h3></div></div>
-                <div class="stat-card indigo"><div class="stat-icon"><i class="fa-solid fa-sack-dollar"></i></div><div><small>ยอดขายรวมวันนี้</small><h3 id="stat-sales-total">฿0</h3></div></div>
+                <div class="stat-card indigo"><div class="stat-icon"><i class="fa-solid fa-sack-dollar"></i></div><div><small>ยอดสุทธิรวมวันนี้</small><h3 id="stat-sales-total">฿0</h3></div></div>
                 <div class="stat-card red"><div class="stat-icon"><i class="fa-solid fa-boxes-stacked"></i></div><div><small>จำนวนชิ้นที่ขายได้วันนี้</small><h3 id="stat-items-sold">0 ชิ้น</h3></div></div>
             </div>
 
             <!-- Product Stats (Shown on Products Tab) -->
             <div class="stats hidden" id="product-stats-cards">
                 <div class="stat-card blue"><div class="stat-icon"><i class="fa-solid fa-warehouse"></i></div><div><small>มูลค่ารวม (ต้นทุน)</small><h3 id="stat-cost">฿0</h3></div></div>
-                <div class="stat-card indigo"><div class="stat-icon"><i class="fa-solid fa-tags"></i></div><div><small>มูลค่ารวม (ขาย)</small><h3 id="stat-sale">฿0</h3></div></div>
+                <div class="stat-card indigo"><div class="stat-icon"><i class="fa-solid fa-tags"></i></div><div><small>มูลค่ารวม (ขาย)</small><h3 id="stat-sale">0</h3></div></div>
                 <div class="stat-card green"><div class="stat-icon"><i class="fa-solid fa-money-bill-trend-up"></i></div><div><small>กำไรคาดการณ์</small><h3 id="stat-profit">฿0</h3></div></div>
                 <div class="stat-card red"><div class="stat-icon"><i class="fa-solid fa-triangle-exclamation"></i></div><div><small>สต็อกต่ำ</small><h3 id="stat-low">0</h3></div></div>
+            </div>
+
+            <!-- Finance Stats (Shown on Finance Tab) -->
+            <div class="stats hidden" id="finance-stats-cards">
+                <div class="stat-card blue"><div class="stat-icon"><i class="fa-solid fa-arrow-trend-up"></i></div><div><small>รายรับรวม (ช่วงที่เลือก)</small><h3 id="stat-fin-revenue">฿0</h3></div></div>
+                <div class="stat-card indigo"><div class="stat-icon"><i class="fa-solid fa-boxes-packing"></i></div><div><small>ต้นทุนสินค้าขาย</small><h3 id="stat-fin-cost">฿0</h3></div></div>
+                <div class="stat-card green"><div class="stat-icon"><i class="fa-solid fa-sack-dollar"></i></div><div><small>กำไรสุทธิ</small><h3 id="stat-fin-profit">฿0</h3></div></div>
+                <div class="stat-card red"><div class="stat-icon"><i class="fa-solid fa-percent"></i></div><div><small>อัตรากำไร (Margin)</small><h3 id="stat-fin-margin">0%</h3></div></div>
             </div>
 
             <!-- Section 1: Today's Items Sold Summary -->
@@ -225,8 +253,8 @@
                 </div>
                 <div class="table-scroll">
                     <table class="data-table">
-                        <thead><tr><th>สินค้า</th><th>SKU</th><th class="c">จำนวนชิ้นที่ขายได้</th><th class="r">ยอดขาย (บาท)</th></tr></thead>
-                        <tbody id="today-items-body"><tr><td colspan="4" class="empty">กำลังโหลดข้อมูลวันนี้...</td></tr></tbody>
+                        <thead><tr><th>ชื่อสินค้า</th><th class="c">จำนวนที่ขายได้ (ชิ้น)</th><th class="r">ยอดขายสุทธิของสินค้านี้ (บาท)</th></tr></thead>
+                        <tbody id="today-items-body"><tr><td colspan="3" class="empty">กำลังโหลดข้อมูลวันนี้...</td></tr></tbody>
                     </table>
                 </div>
             </div>
@@ -265,6 +293,40 @@
                     <table class="data-table">
                         <thead><tr><th>สินค้า</th><th class="c">สต็อก</th><th class="r">ต้นทุน</th><th class="r">ราคาขาย</th><th class="r">กำไร/ชิ้น</th><th class="r">% กำไร</th><th class="r">มูลค่ารวม</th></tr></thead>
                         <tbody id="owner-body"><tr><td colspan="7" class="empty">กำลังโหลด...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+            <!-- Section 3: Financial Chart & Summary (Shown on Finance Tab) -->
+            <div class="table-card hidden" id="finance-report-section">
+                <div class="table-head">
+                    <h3><i class="fa-solid fa-chart-line"></i> กราฟวิเคราะห์การเงิน (ยอดขาย vs ต้นทุน vs กำไรสุทธิ)</h3>
+                    <div class="hstack" style="gap:8px">
+                        <select id="fin-period" class="mini-input" onchange="loadFinanceReport(0)" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-family:inherit">
+                            <option value="daily">รายวัน (14 วันล่าสุด)</option>
+                            <option value="weekly">รายสัปดาห์ (8 สัปดาห์ล่าสุด)</option>
+                        </select>
+                        <button class="btn-outline" onclick="exportContextualExcel()" title="Export สรุปการเงิน"><i class="fa-solid fa-file-excel"></i> Export</button>
+                    </div>
+                </div>
+                <div style="padding:16px">
+                    <div style="position:relative;height:340px;width:100%">
+                        <canvas id="finance-chart"></canvas>
+                    </div>
+                    <div id="finance-chart-empty" class="empty hidden" style="padding:24px">ยังไม่มีข้อมูลการขายในช่วงเวลานี้</div>
+                </div>
+                <div class="table-scroll">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ช่วงเวลา</th>
+                                <th class="c">จำนวนบิล</th>
+                                <th class="c">จำนวนชิ้น</th>
+                                <th class="r">รายรับ (บาท)</th>
+                                <th class="r">ต้นทุน (บาท)</th>
+                                <th class="r">กำไรสุทธิ (บาท)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="finance-body"><tr><td colspan="6" class="empty">กำลังโหลด...</td></tr></tbody>
                     </table>
                 </div>
             </div>
