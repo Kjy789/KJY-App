@@ -47,25 +47,35 @@ LOCATION_IMAGES_DIR = os.path.join(IMAGES_DIR, "locations")
 for d in (IMAGES_DIR, RECEIPT_IMAGES_DIR, PRODUCT_IMAGES_DIR, LOCATION_IMAGES_DIR):
     os.makedirs(d, exist_ok=True)
 
-# GEMINI API KEY FOR AI OCR & PRODUCT VISION
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-if not GEMINI_API_KEY:
-    api_txt_path = os.path.join(BASE_DIR, "api.txt")
-    if os.path.exists(api_txt_path):
-        try:
-            with open(api_txt_path, "r", encoding="utf-8") as f:
-                GEMINI_API_KEY = f.read().strip()
-        except Exception:
-            pass
+# GEMINI API KEYS FOR AI OCR & PRODUCT VISION
+# รองรับหลายชื่อ Environment Variables (กันกรณีตั้งชื่อไม่ตรงบน Render):
+#   Primary : GEMINI_API_KEY_PRIMARY > GEMINI_API_KEY > api.txt
+#   Backup  : GEMINI_API_KEY_SECONDARY > GEMINI_API_KEY_BACKUP > api_backup.txt
+def _read_key_file(path: str) -> str:
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    return ""
 
 
-# GEMINI BACKUP API KEY
-GEMINI_API_KEY_BACKUP = os.getenv("GEMINI_API_KEY_BACKUP", "").strip()
-if not GEMINI_API_KEY_BACKUP:
-    p = os.path.join(BASE_DIR, "api_backup.txt")
-    if os.path.exists(p):
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                GEMINI_API_KEY_BACKUP = f.read().strip()
-        except Exception:
-            pass
+def _pick_env(*names: str) -> str:
+    """คืนค่าจาก env ตัวแรกที่ไม่ว่าง (strip แล้ว)"""
+    for n in names:
+        v = (os.getenv(n) or "").strip()
+        if v:
+            return v
+    return ""
+
+
+GEMINI_API_KEY = (
+    _pick_env("GEMINI_API_KEY_PRIMARY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+    or _read_key_file(os.path.join(BASE_DIR, "api.txt"))
+)
+
+GEMINI_API_KEY_BACKUP = (
+    _pick_env("GEMINI_API_KEY_SECONDARY", "GEMINI_API_KEY_BACKUP", "GEMINI_API_KEY_2")
+    or _read_key_file(os.path.join(BASE_DIR, "api_backup.txt"))
+)

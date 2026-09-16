@@ -19,6 +19,7 @@ from starlette.formparsers import MultiPartParser
 from database import init_db, supabase_admin
 import crud
 from config import RECEIPT_IMAGES_DIR, PRODUCT_IMAGES_DIR, LOCATION_IMAGES_DIR, GEMINI_API_KEY, GEMINI_API_KEY_BACKUP, BASE_DIR
+import traceback
 
 # PIN Code for Boss Mode (default: 1234)
 BOSS_PIN = "1234"
@@ -160,8 +161,23 @@ def _clean_key(val):
 
 
 def _get_gemini_keys():
-    primary = _clean_key(GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY", ""))
-    backup = _clean_key(GEMINI_API_KEY_BACKUP or os.environ.get("GEMINI_API_KEY_BACKUP", ""))
+    """ดึง Gemini API Keys — รองรับหลายชื่อ env ทั้งชุดใหม่และชุดเดิม
+
+    Primary : GEMINI_API_KEY_PRIMARY > GEMINI_API_KEY > GOOGLE_API_KEY > api.txt > config.py
+    Backup  : GEMINI_API_KEY_SECONDARY > GEMINI_API_KEY_BACKUP > GEMINI_API_KEY_2 > api_backup.txt > config.py
+    """
+    primary = _clean_key(
+        os.environ.get("GEMINI_API_KEY_PRIMARY")
+        or os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("GOOGLE_API_KEY")
+        or GEMINI_API_KEY
+    )
+    backup = _clean_key(
+        os.environ.get("GEMINI_API_KEY_SECONDARY")
+        or os.environ.get("GEMINI_API_KEY_BACKUP")
+        or os.environ.get("GEMINI_API_KEY_2")
+        or GEMINI_API_KEY_BACKUP
+    )
     if not primary:
         p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api.txt")
         if os.path.exists(p):
@@ -178,35 +194,182 @@ def _get_gemini_keys():
                     backup = _clean_key(f.read())
             except Exception:
                 pass
+    # กันกรณี primary/backup เป็น key เดียวกัน -> ไม่ต้องลองซ้ำ
+    if backup and backup == primary:
+        backup = ""
     return primary, backup
 
 
-def _gemini_generate(contents, primary_model="gemini-2.5-flash", backup_model="gemini-1.5-flash"):
-    from google import genai
-    primary_key, backup_key = _get_gemini_keys()
-    models_to_try = [primary_model, backup_model, "gemini-1.5-flash"]
-    seen_m = set()
-    uniq_models = [m for m in models_to_try if m and not (m in seen_m or seen_m.add(m))]
-    
-    keys_to_try = [k for k in [primary_key, backup_key] if k]
-    if not keys_to_try:
-        print("[GEMINI] No API key available")
+def _clean_base64_image(value) -> str:
+    """Clean Base64 string ก่อนส่งให้ Gemini:
+    - รับได้ทั้ง Data URL ('data:image/jpeg;base64,xxxx') และ raw base64
+    - ตัด whitespace / newline ออก คืนเฉพาะ raw base64 string
+    """
+    if not value:
+        return ""
+    s = str(value).strip()
+    if "," in s:
+        head, _, tail = s.partition(",")
+        # ตัดเฉพาะเมื่อหน้า comma เป็น header ของ Data URL จริง
+        if head.strip().lower().startswith("data:") or ";" in head:
+            s = tail
+    return "".join(s.split())
+
+
+def _base64_to_bytes(value) -> bytes:
+    """แปลงค่า Base64 (รองรับ Data URL prefix) เป็น bytes"""
+    raw = _clean_base64_image(value)
+    if not raw:
+        return b""
+    try:
+        return base64.b64decode(raw)
+    except Exception as e:
+        print(f"[GEMINI] Base64 decode failed: {e}")
+        return b""
+
+def _gemini_rest_generate(api_key: str, contents: list, model: str, timeout: int = 30):
+    """ยิง Gemini ผ่าน REST API โดยตรง (ใช้เมื่อ SDK import/initialise ไม่ได้)
+    คืนค่า str ถ้าสำเร็จ, ยก Exception พร้อม HTTP status ถ้าล้มเหลว
+    """
+    import requests as _requests
+
+    parts = []
+    for item in contents:
+        if isinstance(item, str):
+            parts.append({"text": item})
+        elif isinstance(item, dict):
+            # Fallback Part แบบ dict (เมื่อสร้าง Part ด้วย SDK ไม่ได้)
+            inline = item.get("inline_data") or item.get("inlineData")
+            if inline and isinstance(inline, dict):
+                parts.append({
+                    "inline_data": {
+                        "mime_type": inline.get("mime_type") or inline.get("mimeData") or "image/jpeg",
+                        "data": inline.get("data", ""),
+                    }
+                })
+            else:
+                parts.append({"text": str(item)})
+        else:
+            # รองรับ types.Part.from_bytes (SDK) -> inline_data สำหรับ REST
+            data = getattr(item, "inline_data", None) or getattr(item, "inlineData", None)
+            if data is not None:
+                mime = getattr(data, "mime_type", None) or "image/jpeg"
+                blob = getattr(data, "data", b"") or b""
+                if isinstance(blob, bytes):
+                    blob = base64.b64encode(blob).decode("utf-8")
+                parts.append({"inline_data": {"mime_type": mime, "data": blob}})
+            else:
+                parts.append({"text": str(item)})
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    resp = _requests.post(
+        url,
+        params={"key": api_key},
+        json={"contents": [{"parts": parts}]},
+        timeout=timeout,
+    )
+    print(f"[GEMINI][REST] model={model} HTTP {resp.status_code}")
+    if resp.status_code != 200:
+        print(f"[GEMINI][REST] Error body: {resp.text[:800]}")
+        resp.raise_for_status()
+    data = resp.json()
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception:
+        print(f"[GEMINI][REST] Unexpected response shape: {str(data)[:500]}")
         return None
 
+
+def _gemini_generate(contents, primary_model="gemini-3.7-flash", backup_model="gemini-3.5-flash"):
+    """เรียก Gemini แบบ Multi-Key + Multi-Model Fallback พร้อม Log สาเหตุจริงลง Console
+
+    ลำดับการลอง:
+      1) Key หลัก (GEMINI_API_KEY_PRIMARY) กับโมเดลหลัก (เช่น gemini-3.7-flash -> gemini-3.6-flash)
+      2) หาก Error/Timeout/Quota Exceeded -> สลับไป Key สำรอง (GEMINI_API_KEY_SECONDARY) กับ gemini-3.5-flash ทันที
+      3) ถ้ายังไม่สำเร็จ -> REST API fallback โดยตรง (กรณี SDK มีปัญหา)
+    ทุกความล้มเหลวจะ print สาเหตุจริง (HTTP status + traceback) ลง Console เพื่อ Debug
+    """
+    primary_key, backup_key = _get_gemini_keys()
+    keys_to_try = [k for k in [primary_key, backup_key] if k]
+    if not keys_to_try:
+        print("[GEMINI] ❌ ไม่พบ API Key! ตั้งค่า GEMINI_API_KEY_PRIMARY / GEMINI_API_KEY_SECONDARY "
+              "(หรือ GEMINI_API_KEY) ใน Environment แล้ว Restart")
+        return None
+
+    # Override ชื่อโมเดลผ่าน env ได้ (เผื่ออนาคต Google เปลี่ยนชื่อโมเดล ไม่ต้องแก้โค้ด)
+    primary_model = (os.environ.get("GEMINI_MODEL") or "").strip() or primary_model
+    backup_model = (os.environ.get("GEMINI_MODEL_BACKUP") or "").strip() or backup_model
+
+    FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.5-flash",
+                       "gemini-flash-latest", "gemini-2.5-flash"]
+
+    def _dedupe(seq):
+        seen, out = set(), []
+        for m in seq:
+            if m and m not in seen:
+                seen.add(m)
+                out.append(m)
+        return out
+
+    # Key หลัก: ลองโมเดลหลักก่อน -> Key สำรอง: ลอง gemini-3.5-flash ทันที
+    primary_models = _dedupe([primary_model, "gemini-3.6-flash", backup_model] + FALLBACK_MODELS)
+    backup_models = _dedupe([backup_model, "gemini-3.6-flash", primary_model] + FALLBACK_MODELS)
+    chain = [(primary_key, primary_models)]
+    if backup_key:
+        chain.append((backup_key, backup_models))
+
+    print(f"[GEMINI] Keys: {len(chain)} ตัว (primary={primary_key[:6]}..., "
+          f"backup={(backup_key[:6] + '...') if backup_key else 'none'}), "
+          f"primary_models={primary_models[:3]}")
+
+    # --- Phase 1: SDK (google-genai) ---
+    try:
+        from google import genai
+    except Exception as e:
+        genai = None
+        print(f"[GEMINI] ⚠️ Import SDK 'google-genai' ไม่สำเร็จ: {e} -> จะใช้ REST API แทน")
+        traceback.print_exc()
+
+    _clients = {}
+
+    def _client_for(key):
+        c = _clients.get(key)
+        if c is None:
+            c = genai.Client(api_key=key)
+            _clients[key] = c
+        return c
+
     last_err = None
-    for key in keys_to_try:
-        for model in uniq_models:
+    if genai is not None:
+        for ki, (key, models) in enumerate(chain, start=1):
+            for model in models:
+                try:
+                    response = _client_for(key).models.generate_content(model=model, contents=contents)
+                    if response and response.text:
+                        return response.text
+                    print(f"[GEMINI] ⚠️ Key#{ki} ({key[:6]}...) Model '{model}': ตอบกลับว่าง (empty response)")
+                except Exception as e:
+                    last_err = e
+                    status = getattr(e, "code", None) or getattr(getattr(e, "response", None), "status_code", None)
+                    print(f"[GEMINI] ❌ Key#{ki} ({key[:6]}...) Model '{model}' failed (status={status}): {e}")
+                    traceback.print_exc()
+    else:
+        print("[GEMINI] ข้าม SDK loop (import ล้มเหลว) -> ใช้ REST fallback")
+
+    # --- Phase 2: REST API fallback (เมื่อ SDK ใช้ไม่ได้ หรือ SDK ลองครบแล้วยังล้มเหลว) ---
+    for ki, (key, models) in enumerate(chain, start=1):
+        for model in models[:3]:
             try:
-                client = genai.Client(api_key=key)
-                response = client.models.generate_content(model=model, contents=contents)
-                if response and response.text:
-                    return response.text
+                text = _gemini_rest_generate(key, contents, model)
+                if text:
+                    print(f"[GEMINI] ✅ REST fallback สำเร็จ (key#{ki}, model={model})")
+                    return text
             except Exception as e:
                 last_err = e
-                print(f"[GEMINI] Key {key[:6]}... Model '{model}' failed: {e}")
-                continue
-    if last_err:
-        print(f"[GEMINI] All attempts failed: {last_err}")
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                print(f"[GEMINI] ❌ REST Key#{ki} ({key[:6]}...) Model '{model}' failed (status={status}): {e}")
+
+    print(f"[GEMINI] 💥 ล้มเหลวทุก attempts (keys={len(chain)}). Last error: {last_err}")
     return None
 
 
@@ -214,12 +377,24 @@ def _gemini_generate(contents, primary_model="gemini-2.5-flash", backup_model="g
 # GEMINI VISION & OCR HELPERS
 # ============================================================
 
-def call_gemini_ocr(image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
+def call_gemini_ocr(image_bytes=None, mime_type: str = "image/jpeg", image_b64=None) -> list:
     """เรียก Gemini API ให้อ่านบิล/ใบเสร็จสั่งซื้อสินค้า (Vision/OCR)
-    ใช้โมเดล gemini-2.5-flash (primary) -> gemini-1.5-flash (backup) เท่านั้น
+    ใช้โมเดล gemini-3.7-flash (Key หลัก) -> gemini-3.6-flash -> Key สำรอง + gemini-3.5-flash
+    รับรูปได้ทั้ง raw bytes และ Base64 string / Data URL (จะ Clean prefix ให้อัตโนมัติ)
     เอาต์พุต JSON ต่อรายการ: name, qty, unit_price (ราคาต่อหน่วย), price (ราคารวม)
     """
-    from google.genai import types
+    # Clean Base64 (ตัด 'data:image/jpeg;base64,' prefix / whitespace ออก) แล้วแปลงเป็น bytes
+    if not image_bytes and image_b64:
+        image_bytes = _base64_to_bytes(image_b64)
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="ไม่พบรูปภาพที่ส่งมา (image ว่างเปล่า)")
+
+    # Import SDK types แบบปลอดภัย — ถ้า SDK พังจะใช้ dict Part + REST fallback แทน (ไม่ crash)
+    try:
+        from google.genai import types
+    except Exception as e:
+        print(f"[GEMINI] ⚠️ Import 'google.genai.types' ไม่สำเร็จ: {e} -> ใช้ dict Part + REST fallback")
+        types = None
 
     # Compress image to prevent Gemini API 1024KB Part size limit error
     compressed_bytes, compressed_mime = compress_image_bytes(image_bytes, max_size=800, quality=75)
@@ -245,14 +420,28 @@ def call_gemini_ocr(image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
 - ถ้าบิลไม่ระบุราคาต่อหน่วย ให้คำนวณจาก ราคารวม / จำนวนชิ้น
 - ตอบกลับเป็น JSON array เดี่ยวเท่านั้น"""
 
-    # Vision/OCR fallback (gemini-2.5-flash -> gemini-1.5-flash)
+    # Vision/OCR fallback (Key หลัก: gemini-3.7-flash -> Key สำรอง: gemini-3.5-flash)
+    if types is not None:
+        image_part = types.Part.from_bytes(data=compressed_bytes, mime_type=compressed_mime)
+    else:
+        # SDK ใช้ไม่ได้ -> สร้าง Part แบบ dict (REST fallback ใน _gemini_generate รองรับ)
+        image_part = {
+            "inline_data": {
+                "mime_type": compressed_mime,
+                "data": base64.b64encode(compressed_bytes).decode("utf-8"),
+            }
+        }
+
     text = _gemini_generate(
-        [prompt, types.Part.from_bytes(data=compressed_bytes, mime_type=compressed_mime)],
-        primary_model="gemini-2.5-flash",
-        backup_model="gemini-1.5-flash"
+        [prompt, image_part],
+        primary_model="gemini-3.7-flash",
+        backup_model="gemini-3.5-flash"
     )
     if not text:
-        raise HTTPException(status_code=500, detail="Gemini API Error: ไม่สามารถอ่านบิลได้ (ทุก API Key ล้มเหลว)")
+        raise HTTPException(
+            status_code=500,
+            detail="Gemini API Error: ไม่สามารถอ่านบิลได้ (ทุก API Key ล้มเหลว) — ดูสาเหตุจริงใน Console/Log จาก prefix [GEMINI]"
+        )
 
     text = text.strip()
     start = text.find('[')
@@ -375,7 +564,12 @@ async def scan_product(file: UploadFile = File(...)):
     image_bytes = await file.read()
     mime_type = file.content_type or "image/jpeg"
 
-    from google.genai import types
+    # Import SDK types แบบปลอดภัย — ถ้า SDK พังจะใช้ dict Part + REST fallback แทน (ไม่ crash)
+    try:
+        from google.genai import types
+    except Exception as e:
+        print(f"[GEMINI] ⚠️ Import 'google.genai.types' ไม่สำเร็จ: {e} -> ใช้ dict Part + REST fallback")
+        types = None
 
     # Compress image to prevent Gemini API 1024KB Part size limit error
     compressed_bytes, compressed_mime = compress_image_bytes(image_bytes, max_size=800, quality=75)
@@ -389,11 +583,22 @@ async def scan_product(file: UploadFile = File(...)):
   "suggested_location": ""
 }"""
 
-    # Vision/OCR fallback (gemini-2.5-flash -> gemini-1.5-flash)
+    if types is not None:
+        image_part = types.Part.from_bytes(data=compressed_bytes, mime_type=compressed_mime)
+    else:
+        # SDK ใช้ไม่ได้ -> สร้าง Part แบบ dict (REST fallback ใน _gemini_generate รองรับ)
+        image_part = {
+            "inline_data": {
+                "mime_type": compressed_mime,
+                "data": base64.b64encode(compressed_bytes).decode("utf-8"),
+            }
+        }
+
+    # Vision fallback (Key หลัก: gemini-3.7-flash -> Key สำรอง: gemini-3.5-flash)
     text = _gemini_generate(
-        [prompt, types.Part.from_bytes(data=compressed_bytes, mime_type=compressed_mime)],
-        primary_model="gemini-2.5-flash",
-        backup_model="gemini-1.5-flash"
+        [prompt, image_part],
+        primary_model="gemini-3.7-flash",
+        backup_model="gemini-3.5-flash"
     )
     if text:
         text = text.strip()
@@ -1267,11 +1472,11 @@ async def generate_product_spec(payload: dict):
 
 เขียนให้กระชับ ตรงประเด็น ใช้ศัพท์ช่างที่เข้าใจง่าย ประมาณ 3-5 ข้อ"""
 
-    # Multi-Key + Multi-Model fallback (primary gemini-2.5-flash -> backup gemini-2.0-flash)
+    # Multi-Key + Multi-Model fallback (Key หลัก: gemini-3.7-flash -> Key สำรอง: gemini-3.5-flash)
     text = _gemini_generate(
         [prompt],
-        primary_model="gemini-2.5-flash",
-        backup_model="gemini-2.0-flash"
+        primary_model="gemini-3.7-flash",
+        backup_model="gemini-3.5-flash"
     )
     if text:
         cleaned = text.strip().replace("```json", "").replace("```", "").strip()
@@ -1295,13 +1500,15 @@ async def upload_image_base64(payload: dict):
     prefix = payload.get("prefix", "img")
     folder = payload.get("folder", "products")
 
-    if not data_url or "," not in data_url:
+    if not data_url:
         raise HTTPException(status_code=400, detail="Invalid data URL")
 
     try:
-        # Extract the base64 data
-        header, encoded = data_url.split(",", 1)
-        file_bytes = base64.b64decode(encoded)
+        # Clean Base64 string (ตัด prefix 'data:image/jpeg;base64,' / whitespace ออกก่อน decode)
+        header = data_url.split(",", 1)[0] if "," in data_url else ""
+        file_bytes = _base64_to_bytes(data_url)
+        if not file_bytes:
+            raise HTTPException(status_code=400, detail="Invalid base64 image data")
 
         # Determine extension
         ext = "jpg"
@@ -1437,16 +1644,16 @@ async def ai_sales_assistant(payload: dict):
 ถ้าเป็นคำถามคำนวณ ให้คำนวณและแสดงผลลัพธ์
 ถ้าไม่รู้จักสินค้า ให้บอกว่าไม่มีข้อมูลและแนะนำให้เช็คกับพนักงาน"""
 
-    # Multi-Key + Multi-Model fallback (primary gemini-2.5-flash -> backup gemini-2.0-flash)
+    # Multi-Key + Multi-Model fallback (Key หลัก: gemini-3.7-flash -> Key สำรอง: gemini-3.5-flash)
     reply = _gemini_generate(
         [prompt],
-        primary_model="gemini-2.5-flash",
-        backup_model="gemini-2.0-flash"
+        primary_model="gemini-3.7-flash",
+        backup_model="gemini-3.5-flash"
     )
     if reply:
         return {"reply": reply.strip()}
 
-    return {"reply": "ขออภัย เกิดข้อผิดพลาด: ไม่สามารถติดต่อ AI ได้ (ทุก API Key ล้มเหลว)"}
+    return {"reply": "ขออภัย เกิดข้อผิดพลาด: ไม่สามารถติดต่อ AI ได้ (ทุก API Key ล้มเหลว) — ตรวจสอบสาเหตุจริงได้ที่ Console/Log จาก prefix [GEMINI]"}
 
 
 # ============================================================
