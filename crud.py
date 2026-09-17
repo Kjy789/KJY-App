@@ -1064,6 +1064,8 @@ def get_today_sales_summary(keyword: str = None):
         "date": today_str,
         "timezone": "Asia/Bangkok",
         "total_sales": 0.0,
+        "total_cost": 0.0,
+        "net_profit": 0.0,
         "total_orders": 0,
         "total_items_sold": 0,
         "items": [],   # สรุปรายการสินค้าที่ขายได้จริงวันนี้
@@ -1087,6 +1089,9 @@ def get_today_sales_summary(keyword: str = None):
                 .execute()
             )
             for r in (res.data or []):
+                # ข้ามบิลที่ถูกคืนของ (void) ไปแล้ว
+                if r.get("voided"):
+                    continue
                 # กันคลาดเคลื่อนเรื่อง timezone — ตรวจซ้ำว่าเป็นวันนี้ (เวลาไทย) จริง
                 if str(to_bangkok_date(r.get("created_at"))) != today_str:
                     continue
@@ -1110,6 +1115,9 @@ def get_today_sales_summary(keyword: str = None):
                 ).fetchall()
                 for r in rows:
                     d = dict(r)
+                    # ข้ามบิลที่ถูกคืนของ (void) ไปแล้ว
+                    if d.get("voided"):
+                        continue
                     if str(to_bangkok_date(d.get("created_at"))) != today_str:
                         continue
                     try:
@@ -1125,6 +1133,17 @@ def get_today_sales_summary(keyword: str = None):
         return today_data
 
     items_agg = {}
+    total_cost = 0.0
+
+    # แผนที่ product_id -> ข้อมูลสินค้าจริง (แก้บิลเก่าที่เก็บชื่อเป็น "สินค้า id=xx" / ราคาเป็น 0)
+    pids = set()
+    for sale in bills:
+        for it in (sale.get("items") or []):
+            pid = it.get("product_id")
+            if pid is not None:
+                pids.add(str(pid))
+    pmap = _get_product_info_map(pids)
+
     for sale in bills:
         sale_items = sale.get("items") or []
         amount = _sale_line_amount(sale)
@@ -1140,19 +1159,55 @@ def get_today_sales_summary(keyword: str = None):
         today_data["total_items_sold"] += qty_count
 
         for it in sale_items:
-            name = str(it.get("name") or "สินค้าไม่ทราบชื่อ").strip() or "สินค้าไม่ทราบชื่อ"
+            pid = it.get("product_id")
+            info = pmap.get(str(pid)) or {}
+
+            # แก้ชื่อสินค้า: บิลเก่าอาจเก็บ "สินค้า id=69" — ดึงชื่อจริงจากตาราง products
+            raw_name = str(it.get("name") or "").strip()
+            name = raw_name
+            if (not name) or name.startswith("สินค้า id=") or info.get("name"):
+                name = (info.get("name") or name or "สินค้าไม่ทราบชื่อ").strip()
+
             qty = float(it.get("qty") or 0)
+            price = float(it.get("price") or 0)
+            if price <= 0:
+                price = float(info.get("sale_price") or 0)
             line_total = float(it.get("line_total") or 0)
             if line_total <= 0:
-                line_total = float(it.get("price") or 0) * qty
+                line_total = price * qty
+
+            # ต้นทุนสินค้าที่ขาย (สำหรับคำนวณกำไรสุทธิ)
+            unit_cost = float(it.get("unit_cost") or 0)
+            if unit_cost <= 0:
+                unit_cost = float(info.get("latest_cost") or 0)
+            line_cost = unit_cost * qty
+            total_cost += line_cost
+
             agg = items_agg.get(name)
             if agg is None:
-                agg = {"name": name, "sku": it.get("sku") or "", "qty": 0.0, "revenue": 0.0}
+                agg = {
+                    "name": name,
+                    "sku": it.get("sku") or info.get("sku") or "",
+                    "qty": 0.0,
+                    "revenue": 0.0,
+                    "cost": 0.0,
+                    "product_id": pid,
+                }
                 items_agg[name] = agg
             agg["qty"] += qty
             agg["revenue"] += line_total
+            agg["cost"] += line_cost
+
+            # เขียนข้อมูลที่แก้แล้วกลับลง sale_items เพื่อแสดงชื่อ/ราคาจริงในตารางบิล
+            it["name"] = name
+            it["sku"] = agg["sku"]
+            it["price"] = price
+            it["line_total"] = round(line_total, 2)
+            it["unit_cost"] = unit_cost
 
     today_data["total_sales"] = round(today_data["total_sales"], 2)
+    today_data["total_cost"] = round(total_cost, 2)
+    today_data["net_profit"] = round(today_data["total_sales"] - total_cost, 2)
     today_data["items"] = sorted(items_agg.values(), key=lambda x: -x["qty"])
 
     if keyword:
@@ -1178,6 +1233,144 @@ def get_today_sales_summary(keyword: str = None):
         today_data["bills"] = bills
 
     return today_data
+
+
+def _get_product_info_map(pids) -> dict:
+    """แผนที่ product_id -> {name, sku, sale_price, latest_cost}
+
+    ใช้แก้บิลเก่าที่ items_json เก็บชื่อเป็น "สินค้า id=xx" หรือราคาเป็น 0
+    โดยดึงชื่อ/ราคาจริงจากตาราง products (SQLite + Supabase fallback)
+    """
+    result = {}
+    ids = []
+    for p in (pids or []):
+        s = str(p).strip()
+        if not s or s in ("None", "null"):
+            continue
+        try:
+            ids.append(int(s))
+        except Exception:
+            continue
+    if not ids:
+        return result
+    try:
+        with db_session() as conn:
+            qmarks = ",".join("?" for _ in ids)
+            rows = conn.execute(
+                f"""SELECT id, name, sku, sale_price, COALESCE(latest_cost, 0) AS latest_cost
+                    FROM products WHERE id IN ({qmarks})""",
+                tuple(ids),
+            ).fetchall()
+            for r in rows:
+                result[str(r["id"])] = {
+                    "name": r["name"] or "",
+                    "sku": r["sku"] or "",
+                    "sale_price": float(r["sale_price"] or 0),
+                    "latest_cost": float(r["latest_cost"] or 0),
+                }
+    except Exception as e:
+        logger.warning(f"product info map (local) failed: {e}")
+
+    # เติมชื่อจาก Supabase สำหรับ id ที่ยังไม่เจอใน local
+    if supabase_admin:
+        missing = [i for i in ids if str(i) not in result]
+        if missing:
+            try:
+                res = (
+                    supabase_admin.from_("products")
+                    .select("id,name,sku,sale_price,cost_price")
+                    .in_("id", missing)
+                    .execute()
+                )
+                for r in (res.data or []):
+                    result[str(r.get("id"))] = {
+                        "name": r.get("name") or "",
+                        "sku": r.get("sku") or "",
+                        "sale_price": float(r.get("sale_price") or 0),
+                        "latest_cost": float(r.get("cost_price") or 0),
+                    }
+            except Exception as e:
+                logger.info(f"product info map (supabase) skipped: {e}")
+    return result
+
+
+def void_sale(sale_id: int, performed_by: str = "owner"):
+    """คืนของ / ยกเลิกบิลขาย (Void Transaction)
+
+    - ทำเครื่องหมายบิลว่าถูกคืนแล้ว (voided = 1) — ไม่ลบบิล เพื่อเก็บประวัติตรวจสอบได้
+    - คืนสต็อกสินค้าทุกรายการในบิลเข้าคลัง (SQLite + Supabase)
+    - บิลที่ถูก void จะไม่ถูกนับในรายงานยอดขายวันนี้อีกต่อไป
+    """
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM sales WHERE id = ?", (sale_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"ไม่พบบิล id={sale_id}")
+        sale = dict(row)
+        if int(sale.get("voided") or 0) == 1:
+            raise ValueError("บิลนี้ถูกคืนของไปแล้ว")
+
+        try:
+            items = json.loads(sale.get("items_json") or "[]")
+        except Exception:
+            items = []
+
+        restored = []
+        for it in items:
+            pid = it.get("product_id")
+            qty = int(float(it.get("qty") or 0))
+            name = str(it.get("name") or "").strip()
+            if not pid or qty <= 0:
+                continue
+            # คืนสต็อก SQLite
+            conn.execute(
+                """UPDATE products
+                   SET stock_qty = COALESCE(stock_qty, 0) + ?,
+                       updated_at = datetime('now', 'localtime')
+                   WHERE id = ?""",
+                (qty, pid),
+            )
+            restored.append({"product_id": pid, "name": name, "qty": qty})
+            # คืนสต็อก Supabase
+            if supabase_admin:
+                try:
+                    sp = (
+                        supabase_admin.from_("products")
+                        .select("stock_qty")
+                        .eq("id", pid)
+                        .single()
+                        .execute()
+                    )
+                    if sp.data is not None:
+                        cur = int(sp.data.get("stock_qty") or 0)
+                        supabase_admin.from_("products").update(
+                            {"stock_qty": cur + qty}
+                        ).eq("id", pid).execute()
+                except Exception as e:
+                    logger.warning(f"Supabase restore stock failed id={pid}: {e}")
+
+        conn.execute(
+            "UPDATE sales SET voided = 1, voided_at = datetime('now', 'localtime') WHERE id = ?",
+            (sale_id,),
+        )
+
+    actor = _actor_name(performed_by)
+    items_desc = ", ".join(f"{r['name']} x{r['qty']}" for r in restored[:10])
+    add_audit_log(
+        "คืนของ / ยกเลิกบิล",
+        (f"{actor} ได้ทำการคืนของบิล {sale.get('receipt_no') or ('#' + str(sale_id))} "
+         f"ยอด {float(sale.get('total_amount') or 0):,.2f} บาท "
+         f"(คืนสต็อก {sum(r['qty'] for r in restored)} ชิ้น: {items_desc})"),
+        performed_by or "owner",
+    )
+
+    return {
+        "status": "ok",
+        "sale_id": sale_id,
+        "receipt_no": sale.get("receipt_no"),
+        "restored_amount": float(sale.get("total_amount") or 0),
+        "restored_items": restored,
+        "message": "คืนของและปรับสต็อกเรียบร้อยแล้ว",
+    }
 
 
 

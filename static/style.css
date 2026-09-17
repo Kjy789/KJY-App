@@ -2436,3 +2436,108 @@ input, select, textarea {
     .sidebar { display: none; }
     .sidebar-toggle { display: none; }
 }
+/* ============================================================
+   REPORTS VIEW — Full Width + Responsive (Mobile / iPad / Desktop)
+   (append last = wins cascade)
+   ============================================================ */
+
+/* ซ่อน Sidebar ตะกร้าสินค้าฝั่งขวาเมื่ออยู่หน้ารายงาน (เนื้อหาเต็มความกว้าง 100%) */
+.app-layout.cart-hidden {
+    grid-template-columns: var(--sidebar-w) 1fr 0 !important;
+}
+.app-layout.cart-hidden .cart-panel {
+    display: none !important;
+}
+/* กันกรณี hover sidebar ทับ rule เดิม (specificity เท่ากัน — มาทีหลังชนะ) */
+.app-layout.cart-hidden:has(.sidebar:hover),
+.app-layout.cart-hidden:has(.sidebar.expanded) {
+    grid-template-columns: var(--sidebar-w) 1fr 0 !important;
+}
+
+/* แท็บหน้ารายงาน — ปุ่มกว้างเท่ากัน สมมาตรทุกจอ */
+.report-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0 24px 16px;
+}
+.report-tabs button {
+    flex: 1 1 200px;
+    min-height: 44px;
+    justify-content: center;
+    white-space: nowrap;
+}
+
+/* การ์ดสรุปหน้ารายงาน — 3 การ์ดกว้างเท่ากันพอดี */
+#sales-stats-cards {
+    grid-template-columns: repeat(3, 1fr);
+}
+
+/* ปุ่มคืนของ (Void) + ป้ายบิลที่คืนแล้ว */
+.btn-void {
+    border: 1px solid #FECACA;
+    background: var(--red-light);
+    color: var(--red);
+    border-radius: var(--radius-sm);
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: var(--tr);
+    white-space: nowrap;
+}
+.btn-void:hover { background: #FECACA; }
+.btn-void:active { transform: scale(0.96); }
+
+.voided-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #FEE2E2;
+    color: #B91C1C;
+    border: 1px solid #FECACA;
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+/* ---- iPad / Tablet (769px - 1024px) ---- */
+@media (max-width: 1024px) {
+    .report-tabs { margin: 0 16px 14px; }
+    #sales-stats-cards {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        padding: 12px 16px;
+    }
+    .stat-card { padding: 14px; gap: 10px; }
+    .stat-card h3 { font-size: 16px; }
+    .stat-card small { font-size: 11px; }
+}
+
+/* ---- Mobile (≤768px) — การ์ดเรียงลงเต็มความกว้าง สมมาตร ไม่เลื่อนหลุดขอบ ---- */
+@media (max-width: 768px) {
+    .report-tabs {
+        flex-direction: column;
+        margin: 0 14px 12px;
+        gap: 8px;
+    }
+    .report-tabs button { width: 100%; flex: 1 1 auto; }
+    #sales-stats-cards {
+        grid-template-columns: 1fr;
+        padding: 10px 14px;
+        gap: 8px;
+    }
+    .stat-card { padding: 12px 14px; }
+    .table-card { margin: 10px 14px 12px; }
+}
+
+/* ---- Mobile เล็ก (≤480px) ---- */
+@media (max-width: 480px) {
+    .stat-card h3 { font-size: 15px; }
+    .data-table th, .data-table td { padding: 7px 9px; font-size: 11.5px; }
+    .btn-void { padding: 5px 9px; font-size: 11px; }
+    .report-tabs button { font-size: 13px; }
+}

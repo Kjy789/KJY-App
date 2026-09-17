@@ -51,3 +51,13 @@ ALTER TABLE public.products
 ADD COLUMN IF NOT EXISTS is_complete BOOLEAN DEFAULT TRUE NOT NULL;
 
 UPDATE public.products SET is_complete = FALSE WHERE status = 'pending';
+
+-- ============================================================
+-- 10. Add voided columns to sales (คืนของ / Void Transaction)
+--     voided = true เมื่อบิลถูกคืนของ — บิลจะไม่ถูกนับในรายงานยอดขาย
+-- ============================================================
+ALTER TABLE public.sales
+ADD COLUMN IF NOT EXISTS voided BOOLEAN DEFAULT FALSE NOT NULL;
+
+ALTER TABLE public.sales
+ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ;

@@ -210,24 +210,24 @@
                 </div>
             </div>
 
-            <!-- Tab selector for reports -->
-            <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+            <!-- Tab selector for reports (1=ขาย, 2=การเงิน, 3=กำไรรายสินค้า) -->
+            <div class="report-tabs">
                 <button class="btn-primary" id="btn-tab-sales" onclick="switchReportTab('sales')">
                     <i class="fa-solid fa-receipt"></i> รายงานการขาย (ประวัติบิล)
                 </button>
-                <button class="btn-outline" id="btn-tab-products" onclick="switchReportTab('products')">
-                    <i class="fa-solid fa-chart-pie"></i> วิเคราะห์กำไรรายสินค้า
-                </button>
                 <button class="btn-outline" id="btn-tab-finance" onclick="switchReportTab('finance')">
                     <i class="fa-solid fa-chart-line"></i> รายงานการเงิน &amp; กราฟ
+                </button>
+                <button class="btn-outline" id="btn-tab-products" onclick="switchReportTab('products')">
+                    <i class="fa-solid fa-chart-pie"></i> วิเคราะห์กำไรรายสินค้า
                 </button>
             </div>
 
             <!-- Sales Stats (Shown on Sales Tab) -->
             <div class="stats" id="sales-stats-cards">
-                <div class="stat-card green"><div class="stat-icon"><i class="fa-solid fa-circle-dollar-to-slot"></i></div><div><small>ยอดขายวันนี้</small><h3 id="stat-sales-today">฿0</h3></div></div>
-                <div class="stat-card indigo"><div class="stat-icon"><i class="fa-solid fa-sack-dollar"></i></div><div><small>ยอดสุทธิรวมวันนี้</small><h3 id="stat-sales-total">฿0</h3></div></div>
-                <div class="stat-card red"><div class="stat-icon"><i class="fa-solid fa-boxes-stacked"></i></div><div><small>จำนวนชิ้นที่ขายได้วันนี้</small><h3 id="stat-items-sold">0 ชิ้น</h3></div></div>
+                <div class="stat-card green"><div class="stat-icon"><i class="fa-solid fa-circle-dollar-to-slot"></i></div><div><small>ยอดขายวันนี้ (Total Sales)</small><h3 id="stat-sales-today">฿0</h3></div></div>
+                <div class="stat-card green"><div class="stat-icon"><i class="fa-solid fa-money-bill-trend-up"></i></div><div><small>กำไรสุทธิวันนี้ (Net Profit)</small><h3 id="stat-sales-profit">฿0</h3></div></div>
+                <div class="stat-card blue"><div class="stat-icon"><i class="fa-solid fa-boxes-stacked"></i></div><div><small>จำนวนชิ้นที่ขายได้วันนี้ (Units Sold)</small><h3 id="stat-items-sold">0 ชิ้น</h3></div></div>
             </div>
 
             <!-- Product Stats (Shown on Products Tab) -->
@@ -265,7 +265,7 @@
                     <h3><i class="fa-solid fa-receipt"></i> รายการขายวันนี้ (บิลจากตารางคำสั่งซื้อ/การขาย)</h3>
                     <div class="mini-search"><i class="fa-solid fa-magnifying-glass"></i><input type="text" id="sales-search" placeholder="ค้นหาเลขบิล, ผู้ขาย..." oninput="debounceSearch('sales')"></div>
                 </div>
-            <div class="table-scroll">
+                <div class="table-scroll">
                     <table class="data-table">
                         <thead>
                             <tr>
@@ -276,26 +276,14 @@
                                 <th class="r">ยอดสุทธิ</th>
                                 <th class="c">การชำระ</th>
                                 <th class="c">ผู้ขาย</th>
+                                <th class="c">จัดการ / คืนของ</th>
                             </tr>
                         </thead>
-                        <tbody id="sales-body"><tr><td colspan="7" class="empty">กำลังโหลดยอดขายวันนี้...</td></tr></tbody>
+                        <tbody id="sales-body"><tr><td colspan="8" class="empty">กำลังโหลดยอดขายวันนี้...</td></tr></tbody>
                     </table>
                 </div>
             </div>
 
-            <!-- Section 2: Product Profit Table -->
-            <div class="table-card hidden" id="product-report-section">
-                <div class="table-head">
-                    <h3><i class="fa-solid fa-chart-pie"></i> วิเคราะห์กำไรและต้นทุนรายสินค้า</h3>
-                    <div class="mini-search"><i class="fa-solid fa-magnifying-glass"></i><input type="text" id="owner-search" placeholder="ค้นหาชื่อ, SKU..." oninput="debounceSearch('owner')"></div>
-                </div>
-                <div class="table-scroll">
-                    <table class="data-table">
-                        <thead><tr><th>สินค้า</th><th class="c">สต็อก</th><th class="r">ต้นทุน</th><th class="r">ราคาขาย</th><th class="r">กำไร/ชิ้น</th><th class="r">% กำไร</th><th class="r">มูลค่ารวม</th></tr></thead>
-                        <tbody id="owner-body"><tr><td colspan="7" class="empty">กำลังโหลด...</td></tr></tbody>
-                    </table>
-                </div>
-            </div>
             <!-- Section 3: Financial Chart & Summary (Shown on Finance Tab) -->
             <div class="table-card hidden" id="finance-report-section">
                 <div class="table-head">
@@ -327,6 +315,20 @@
                             </tr>
                         </thead>
                         <tbody id="finance-body"><tr><td colspan="6" class="empty">กำลังโหลด...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Section 4: Product Profit Table (แท็บสุดท้าย) -->
+            <div class="table-card hidden" id="product-report-section">
+                <div class="table-head">
+                    <h3><i class="fa-solid fa-chart-pie"></i> วิเคราะห์กำไรและต้นทุนรายสินค้า</h3>
+                    <div class="mini-search"><i class="fa-solid fa-magnifying-glass"></i><input type="text" id="owner-search" placeholder="ค้นหาชื่อ, SKU..." oninput="debounceSearch('owner')"></div>
+                </div>
+                <div class="table-scroll">
+                    <table class="data-table">
+                        <thead><tr><th>สินค้า</th><th class="c">สต็อก</th><th class="r">ต้นทุน</th><th class="r">ราคาขาย</th><th class="r">กำไร/ชิ้น</th><th class="r">% กำไร</th><th class="r">มูลค่ารวม</th></tr></thead>
+                        <tbody id="owner-body"><tr><td colspan="7" class="empty">กำลังโหลด...</td></tr></tbody>
                     </table>
                 </div>
             </div>

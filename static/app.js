@@ -127,6 +127,13 @@ function switchView(view) {
 
     currentView = view;
 
+    // หน้ารายงาน: ซ่อน Sidebar ตะกร้าสินค้าฝั่งขวา + ขยายเนื้อหาให้เต็มความกว้าง (Full Width)
+    var layoutEl = document.querySelector('.app-layout');
+    if (layoutEl) {
+        if (view === 'reports') layoutEl.classList.add('cart-hidden');
+        else layoutEl.classList.remove('cart-hidden');
+    }
+
     var allViews = document.querySelectorAll('.view');
     for (var i = 0; i < allViews.length; i++) { allViews[i].classList.remove('active'); }
 
@@ -896,7 +903,7 @@ function switchReportTab(tab) {
     if (tab !== 'sales' && tab !== 'products' && tab !== 'finance') tab = 'sales';
     currentReportTab = tab;
 
-    var tabs = ['sales', 'products', 'finance'];
+    var tabs = ['sales', 'finance', 'products'];
     var sections = {
         sales: ['sales-report-section', 'today-items-section', 'sales-stats-cards'],
         products: ['product-report-section', 'product-stats-cards'],
@@ -933,7 +940,7 @@ async function loadSalesReport(keyword) {
     var tbody = document.getElementById('sales-body');
     if (!tbody) return;
 
-    tbody.innerHTML = '<tr><td colspan="7" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลดยอดขายวันนี้...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลดยอดขายวันนี้...</td></tr>';
     var todayItemsBodyInit = document.getElementById('today-items-body');
     if (todayItemsBodyInit) todayItemsBodyInit.innerHTML = '<tr><td colspan="3" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลด...</td></tr>';
 
@@ -947,13 +954,12 @@ async function loadSalesReport(keyword) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         var data = await res.json();
 
-        // ---- อัปเดตการ์ดสรุปยอดขาย (วันนี้) ----
-        // หมายเหตุ: การ์ด "จำนวนบิลวันนี้" ถูกนำออกจากหน้าจอตามข้อกำหนดแล้ว
+        // ---- การ์ดสรุป 3 ใบ: ยอดขายวันนี้ / กำไรสุทธิวันนี้ / จำนวนชิ้นที่ขายได้วันนี้ ----
         var elTodaySales = document.getElementById('stat-sales-today');
-        var elTotalSales = document.getElementById('stat-sales-total');
+        var elNetProfit = document.getElementById('stat-sales-profit');
         var elTotalItems = document.getElementById('stat-items-sold');
         if (elTodaySales) elTodaySales.textContent = '฿' + fmtMoney(data.total_sales || 0);
-        if (elTotalSales) elTotalSales.textContent = '฿' + fmtMoney(data.total_sales || 0);
+        if (elNetProfit) elNetProfit.textContent = '฿' + fmtMoney(data.net_profit || 0);
         if (elTotalItems) elTotalItems.textContent = (data.total_items_sold || 0) + ' ชิ้น';
 
         // ---- ตาราง: สินค้าที่ขายได้จริงวันนี้ (แสดง 'ชื่อสินค้า' ไม่ใช่รหัส SKU) ----
@@ -979,7 +985,7 @@ async function loadSalesReport(keyword) {
         // ---- ตาราง: บิลขายของวันนี้ (เฉพาะวันนี้ จากตาราง sales) ----
         var sales = data.bills || [];
         if (!sales || sales.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="empty">ยังไม่มีการขายเกิดขึ้นในวันนี้ (ไปบันทึกการขายที่หน้า POS เพื่อสร้างบิล)</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="empty">ยังไม่มีการขายเกิดขึ้นในวันนี้ (ไปบันทึกการขายที่หน้า POS เพื่อสร้างบิล)</td></tr>';
             return;
         }
 
@@ -991,7 +997,7 @@ async function loadSalesReport(keyword) {
             if (items.length > 0) {
                 var itemParts = [];
                 for (var k = 0; k < Math.min(items.length, 3); k++) {
-                    itemParts.push(escHtml(items[k].name) + ' <span style="color:var(--blue);font-weight:600">x' + items[k].qty + '</span>');
+                    itemParts.push(escHtml(items[k].name || ('สินค้า id=' + items[k].product_id)) + ' <span style="color:var(--blue);font-weight:600">x' + items[k].qty + '</span>');
                 }
                 itemsDesc = itemParts.join(', ');
                 if (items.length > 3) {
@@ -1009,7 +1015,16 @@ async function loadSalesReport(keyword) {
                 ? '<span class="stock-tag" style="background:#fef3c7;color:#b45309"><i class="fa-solid fa-crown"></i> เจ้าของร้าน</span>'
                 : '<span class="stock-tag" style="background:#f1f5f9;color:#475569"><i class="fa-solid fa-user"></i> พนักงาน</span>';
 
-            html += '<tr>' +
+            // คอลัมน์จัดการ / คืนของ (Void Transaction)
+            var safeReceipt = String(s.receipt_no || '').replace(/['"\\]/g, '');
+            var actionCol;
+            if (s.voided) {
+                actionCol = '<span class="voided-badge"><i class="fa-solid fa-rotate-left"></i> คืนแล้ว</span>';
+            } else {
+                actionCol = '<button class="btn-void" onclick="voidBill(' + s.id + ', \'' + safeReceipt + '\')" title="คืนสินค้าทั้งบิลเข้าสต็อก"><i class="fa-solid fa-rotate-left"></i> คืนของ</button>';
+            }
+
+            html += '<tr' + (s.voided ? ' style="opacity:0.6"' : '') + '>' +
                 '<td style="white-space:nowrap;font-size:12px;color:var(--text-secondary)">' + escHtml(s.created_at || '-') + '</td>' +
                 '<td><strong style="font-family:monospace;font-size:12px;color:var(--blue)">' + escHtml(s.receipt_no || '-') + '</strong></td>' +
                 '<td style="max-width:280px;line-height:1.4">' + itemsDesc + '</td>' +
@@ -1017,15 +1032,50 @@ async function loadSalesReport(keyword) {
                 '<td class="r" style="font-family:\'Inter\',sans-serif;font-weight:700;color:var(--blue);font-size:14px">฿' + fmtMoney(s.total_amount || 0) + '</td>' +
                 '<td class="c">' + payBadge + '</td>' +
                 '<td class="c">' + soldByBadge + '</td>' +
+                '<td class="c">' + actionCol + '</td>' +
                 '</tr>';
         }
         tbody.innerHTML = html;
 
     } catch (err) {
         console.error('Sales report error:', err);
-        tbody.innerHTML = '<tr><td colspan="7" class="empty" style="color:var(--red)">เกิดข้อผิดพลาดในการโหลดรายงานการขาย: ' + err.message + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="empty" style="color:var(--red)">เกิดข้อผิดพลาดในการโหลดรายงานการขาย: ' + err.message + '</td></tr>';
         var eItems = document.getElementById('today-items-body');
         if (eItems) eItems.innerHTML = '<tr><td colspan="3" class="empty">เกิดข้อผิดพลาด</td></tr>';
+    }
+}
+
+/**
+ * คืนของ / ยกเลิกบิลขาย (Void Transaction)
+ * - ยืนยันก่อนทำรายการ
+ * - เรียก API คืนสินค้าทุกรายการในบิลเข้าสต็อก
+ * - โหลดรายงานใหม่ (บิลจะหายจากรายงานวันนี้ทันที)
+ */
+async function voidBill(saleId, receiptNo) {
+    if (currentRole !== 'owner') {
+        showToast('ต้องเข้าสู่โหมด Owner เพื่อคืนของ', 'error');
+        return;
+    }
+    if (!saleId) return;
+
+    var label = receiptNo || ('#' + saleId);
+    if (!confirm('ยืนยัน "คืนของ" บิล ' + label + ' ?\n\nระบบจะคืนสินค้าทุกรายการในบิลเข้าคลังอัตโนมัติ\nและตัดยอดออกจากรายงานยอดขายวันนี้')) return;
+
+    try {
+        var res = await fetch('/api/owner/sales/' + saleId + '/void', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ performed_by: 'owner' })
+        });
+        var data = await res.json().catch(function() { return {}; });
+        if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+
+        showToast('✅ คืนของบิล ' + label + ' สำเร็จ — คืนสินค้าเข้าสต็อกแล้ว', 'success');
+
+        var kw = document.getElementById('sales-search') ? document.getElementById('sales-search').value.trim() : '';
+        await loadSalesReport(kw);
+    } catch (err) {
+        showToast('❌ คืนของไม่สำเร็จ: ' + err.message, 'error');
     }
 }
 

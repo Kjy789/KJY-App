@@ -216,9 +216,19 @@ def init_db():
                 items_json      TEXT,
                 items_count     INTEGER DEFAULT 0,
                 sold_by         TEXT DEFAULT 'staff',
+                voided          INTEGER DEFAULT 0,
+                voided_at       TEXT,
                 created_at      TEXT DEFAULT (datetime('now', 'localtime'))
             );
         """)
+
+        # Migration check สำหรับตาราง sales (บิลที่ถูกยกเลิก/คืนของเข้าสต็อก)
+        cur_sales = conn.execute("PRAGMA table_info(sales);")
+        sales_cols = [row["name"] for row in cur_sales.fetchall()]
+        if "voided" not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN voided INTEGER DEFAULT 0;")
+        if "voided_at" not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN voided_at TEXT;")
 
         # Seed initial mock products if database is empty
         count_res = conn.execute("SELECT COUNT(*) as cnt FROM products;").fetchone()

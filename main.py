@@ -864,7 +864,24 @@ def get_today_sales_report(keyword: str = Query(None)):
         try:
             return crud.get_today_sales_summary(keyword=keyword)
         except Exception:
-            return {"date": "", "total_sales": 0, "total_orders": 0, "total_items_sold": 0, "items": [], "bills": []}
+            return {"date": "", "total_sales": 0, "total_cost": 0, "net_profit": 0, "total_orders": 0, "total_items_sold": 0, "items": [], "bills": []}
+
+
+@app.post("/api/owner/sales/{sale_id}/void")
+def void_sale_route(sale_id: int, payload: dict = None):
+    """คืนของ / ยกเลิกบิลขาย (Void Transaction)
+
+    - คืนสินค้าทุกรายการในบิลเข้าสต็อกอัตโนมัติ
+    - ทำเครื่องหมายบิลว่าถูกคืนแล้ว (ไม่ลบบิล) — บิลจะหายไปจากรายงานยอดขายวันนี้
+    """
+    performed_by = (payload or {}).get("performed_by", "owner") or "owner"
+    try:
+        return crud.void_sale(sale_id, performed_by=performed_by)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Void sale error: {e}")
+        raise HTTPException(status_code=500, detail=f"คืนของไม่สำเร็จ: {e}")
 
 
 @app.post("/api/audit-log")
