@@ -402,18 +402,22 @@ def call_gemini_ocr(image_bytes=None, mime_type: str = "image/jpeg", image_b64=N
     prompt = """อ่านบิล/ใบเสร็จรับเงิน (Invoice / Receipt) ในรูปนี้ แล้วตอบกลับเป็น JSON array เท่านั้น
 ห้ามมีข้อความอื่นนอกเหนือจาก JSON (ห้ามใช้ Markdown fence รอบ JSON)
 
-ให้แกะข้อมูลจากบิลออกมาเฉพาะ 3 ค่าหลักต่อรายการสินค้า:
-1) ชื่อสินค้า  2) ราคาต้นทุนต่อหน่วย (Cost Price)  3) จำนวนชิ้น (Quantity)
+ให้สกัดข้อมูลจากบิลออกมาเฉพาะ 3 ค่า ต่อรายการสินค้า เท่านั้น:
+1) ชื่อสินค้า (Product Name)
+2) ราคาต้นทุนต่อหน่วย (Cost Price) — คือราคาที่ร้านซื้อมา ไม่ใช่ราคาขาย
+3) จำนวน (Quantity)
 
 โครงสร้าง JSON ต่อรายการสินค้า (ภาษาไทย) ตามนี้:
 [{
   "name": "ชื่อสินค้า (อ่านให้เต็ม อย่าตัดทอน)",
   "qty": จำนวนชิ้น/หน่วย (ตัวเลขเท่านั้น),
-  "unit_price": ราคาต้นทุนต่อหน่วย (บาท ตัวเลขเท่านั้น),
-  "price": ราคารวมของรายการนี้ = qty x unit_price (บาท ตัวเลขเท่านั้น)
+  "cost_price": ราคาต้นทุนต่อหน่วย (บาท ตัวเลขเท่านั้น),
+  "price": ราคารวมของรายการนี้ = qty x cost_price (บาท ตัวเลขเท่านั้น)
 }]
 
 เงื่อนไข:
+- ห้ามสกัด "ตำแหน่งจัดเก็บ" (Shelf Location) จากบิล — ให้เว้นว่างเสมอ (Owner จะเป็นผู้กรอกเองภายหลัง)
+- ห้ามสกัดราคาขาย (Sale Price) — ค่าที่อ่านได้จากบิลคือ "ราคาต้นทุน" เท่านั้น
 - ส่วนลด / ค่าขนส่ง / ยอดรวมท้ายบิล ห้ามนำมาเป็นแถวรายการสินค้า
 - สินค้าซ้ำกัน ให้รวมเป็นแถวเดียว (รวม qty และ price)
 - ถ้าอ่านตัวเลขไม่ชัด ให้ใส่ค่าที่อ่านได้ใกล้เคียงที่สุด ห้ามใส่ค่าติดลบ
@@ -459,16 +463,25 @@ def call_gemini_ocr(image_bytes=None, mime_type: str = "image/jpeg", image_b64=N
             if not name:
                 continue
             qty = float(item.get("qty", item.get("quantity", 1)))
-            unit_price = float(item.get("unit_price", item.get("unit_cost", item.get("price_per_unit", 0))) or 0)
+            # ราคาที่อ่านได้จากบิล = ราคาต้นทุน (Cost Price) เท่านั้น ห้ามแมปเป็นราคาขาย
+            unit_cost = float(
+                item.get("cost_price",
+                         item.get("unit_cost",
+                                  item.get("unit_price",
+                                           item.get("price_per_unit", 0)))) or 0
+            )
             line_total = float(item.get("price", item.get("line_total", item.get("total", 0))) or 0)
             if line_total <= 0:
-                line_total = qty * unit_price
+                line_total = qty * unit_cost
             cleaned.append({
                 "name": name,
                 "qty": qty,
-                "unit_cost": unit_price,
+                "unit_cost": unit_cost,
                 "price": line_total,
                 "line_total": line_total,
+                # ตำแหน่งจัดเก็บ: บังคับเป็นค่าว่างเสมอ (Owner พิมพ์กรอกเองภายหลัง)
+                "location_code": "",
+                "location": "",
             })
         if not cleaned:
             raise HTTPException(status_code=500, detail="ไม่พบรายการสินค้าในบิล")
@@ -722,10 +735,15 @@ async def update_product_staff_route(
         except (ValueError, TypeError):
             update_data["sale_price"] = 0.0
 
+    # ราคาต้นทุน (cost_price): Staff ห้ามแก้ — บันทึกได้เฉพาะ Owner
+    actor_role = str(performed_by or "").strip().lower()
+    is_staff_actor = actor_role in ("staff", "พนักงาน")
     if cost_price is not None and str(cost_price).strip():
         try:
             update_data["cost_price"] = float(cost_price)
-            update_data["allow_cost_price"] = True
+            if not is_staff_actor:
+                # อนุญาตให้ crud เขียนคอลัมน์ต้นทุน (Supabase = cost_price, SQLite = latest_cost)
+                update_data["allow_cost_price"] = True
         except (ValueError, TypeError):
             pass
 
@@ -953,6 +971,22 @@ def delete_staff_product(product_id: int, performed_by: str = Query("staff")):
     except Exception as e:
         print(f"Delete staff product error: {e}")
         raise HTTPException(status_code=500, detail=f"ลบสินค้าไม่สำเร็จ: {e}")
+
+
+@app.get("/api/owner/products/{product_id}")
+def get_owner_product_detail(product_id: int):
+    """ดึงข้อมูลสินค้า 1 รายการแบบเต็มสำหรับ Owner (มีราคาต้นทุน)
+
+    ใช้เติมค่าใน Modal แก้ไขสินค้า/รายละเอียดสินค้าฝั่ง Owner
+    เพื่อไม่ให้ช่อง 'ราคาต้นทุน' ว่างและหลุดเป็น 0 ตอนบันทึก
+    """
+    try:
+        p = crud.get_product_owner(product_id)
+        if p:
+            return p
+    except Exception as e:
+        logger.error(f"Owner product detail error: {e}")
+    raise HTTPException(status_code=404, detail="ไม่พบสินค้า")
 
 
 @app.get("/api/owner/dashboard")

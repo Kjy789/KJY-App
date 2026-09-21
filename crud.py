@@ -508,11 +508,23 @@ def add_product_staff(name, sale_price=0, cost_price=0, category=None, sku=None,
             logger.error(f"[SUPABASE] RLS check: ถ้า error เป็น 'permission denied' หรือ 'new row violates row-level security policy' แปลว่า RLS ยังบล็อกอยู่ — ต้องรัน fix_rls_permissions.sql ใน Supabase SQL Editor")
 
     with db_session() as conn:
-        cur = conn.execute(
-            """INSERT INTO products (sku, name, category, sale_price, location_code, location, description, image_path, location_image_path, stock_qty, min_stock, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
-            (sku, name, category, sale_price, location_code, location, description, image_path, location_image_path, total_stock, min_stock),
-        )
+        # บันทึกราคาต้นทุนลงคอลัมน์ latest_cost ของ SQLite (Supabase ใช้คอลัมน์ cost_price)
+        cost_value = float(cost_price or 0)
+        try:
+            cur = conn.execute(
+                """INSERT INTO products (sku, name, category, sale_price, latest_cost, location_code, location, description, image_path, location_image_path, stock_qty, min_stock, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
+                (sku, name, category, sale_price, cost_value, location_code, location, description,
+                 image_path, location_image_path, total_stock, min_stock),
+            )
+        except Exception:
+            # เผื่อฐานข้อมูลเก่ายังไม่มีคอลัมน์ latest_cost
+            cur = conn.execute(
+                """INSERT INTO products (sku, name, category, sale_price, location_code, location, description, image_path, location_image_path, stock_qty, min_stock, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
+                (sku, name, category, sale_price, location_code, location, description,
+                 image_path, location_image_path, total_stock, min_stock),
+            )
         pid = cur.lastrowid
 
         # อัปเดต front_stock / warehouse_stock แยก (ถ้าตาราง SQLite มีคอลัมน์)
@@ -668,12 +680,39 @@ def update_product_staff(product_id: int, performed_by: str = "staff", **fields)
             logger.error(f"[SUPABASE] Payload sent: {safe_payload}")
             logger.error(f"[SUPABASE] ตรวจสอบว่า product id={product_id} มีอยู่จริงบน Supabase หรือ RLS บล็อก UPDATE")
 
-    set_clause = ", ".join(f"{k} = ?" for k in filtered_fields)
+    # ---- บันทึกลง SQLite (local fallback) ----
+    # หมายเหตุสำคัญ: ตาราง products ของ SQLite ใช้คอลัมน์ "latest_cost" (ไม่มี cost_price)
+    # จึงต้องแมป cost_price -> latest_cost ก่อนสร้าง SQL UPDATE ไม่เช่นนั้นจะ error
+    # "no such column: cost_price" และราคาต้นทุนจะไม่ถูกบันทึก (กลายเป็น 0)
+    sqlite_fields = dict(filtered_fields)
+    if "cost_price" in sqlite_fields:
+        sqlite_fields["latest_cost"] = sqlite_fields.pop("cost_price")
+
+    set_clause = ", ".join(f"{k} = ?" for k in sqlite_fields)
     set_clause += ", updated_at = datetime('now', 'localtime')"
-    values = list(filtered_fields.values())
+    values = list(sqlite_fields.values())
     values.append(product_id)
     with db_session() as conn:
-        conn.execute(f"UPDATE products SET {set_clause} WHERE id = ?", values)
+        try:
+            conn.execute(f"UPDATE products SET {set_clause} WHERE id = ?", values)
+        except Exception as sql_err:
+            # เผื่อคอลัมน์บางตัวยังไม่มีในฐานข้อมูลเก่า -> ตัดคอลัมน์นั้นออกแล้วลองใหม่
+            logger.warning(f"[SQLITE] UPDATE failed ({sql_err}) — retrying with known columns only")
+            known_cols = {
+                "name", "category", "sku", "sale_price", "latest_cost", "stock_qty",
+                "location_code", "location", "description", "min_stock",
+                "image_path", "location_image_path", "front_stock", "warehouse_stock",
+                "is_complete",
+            }
+            safe_fields = {k: v for k, v in sqlite_fields.items() if k in known_cols}
+            if not safe_fields:
+                raise
+            set_clause = ", ".join(f"{k} = ?" for k in safe_fields)
+            set_clause += ", updated_at = datetime('now', 'localtime')"
+            values = list(safe_fields.values())
+            values.append(product_id)
+            conn.execute(f"UPDATE products SET {set_clause} WHERE id = ?", values)
+
         add_audit_log("แก้ไขสินค้า", f"แก้ไขสินค้า id={product_id}: {', '.join(filtered_fields.keys())}", performed_by)
 
 
@@ -1587,17 +1626,19 @@ def create_pending_product_from_receipt(receipt_id, ocr_name, qty, unit_cost, li
             )
         else:
             # 2) สร้างสินค้าใหม่ในคลังทันที แต่ยังลงไม่ครบ (is_complete = 0)
+            #    - ราคาต้นทุนจากบิล -> เก็บใน latest_cost (SQLite) / cost_price (Supabase)
+            #    - ราคาขาย = 0 และ ตำแหน่งจัดเก็บ = "" เสมอ (ให้ Owner พิมพ์กรอกเองภายหลัง)
             try:
                 cur = conn.execute(
-                    """INSERT INTO products (name, latest_cost, stock_qty, status, is_complete)
-                       VALUES (?, ?, ?, 'active', 0)""",
+                    """INSERT INTO products (name, latest_cost, sale_price, stock_qty, location_code, location, status, is_complete)
+                       VALUES (?, ?, 0, ?, '', '', 'active', 0)""",
                     (ocr_name, unit_cost, qty),
                 )
             except Exception:
                 # เผื่อฐานข้อมูลยังไม่มีคอลัมน์ is_complete
                 cur = conn.execute(
-                    """INSERT INTO products (name, latest_cost, stock_qty, status)
-                       VALUES (?, ?, ?, 'active')""",
+                    """INSERT INTO products (name, latest_cost, sale_price, stock_qty, location_code, location, status)
+                       VALUES (?, ?, 0, ?, '', '', 'active')""",
                     (ocr_name, unit_cost, qty),
                 )
             product_id = cur.lastrowid
@@ -1907,7 +1948,7 @@ def list_incomplete_products(keyword=None):
         except Exception as e:
             logger.info(f"Supabase incomplete products query skipped: {e}")
 
-    # 2) SQLite local (ตัดสินค้าที่เติมข้อมูลครบแล้วบน Cloud ออก)
+    # 2) SQLite local — กรองเฉพาะ is_complete = 0 (หรือ status = 'pending' ที่ยังลงไม่ครบ)
     completion = _cloud_product_completion_map()
     try:
         with db_session() as conn:
@@ -1916,7 +1957,7 @@ def list_incomplete_products(keyword=None):
                           location_code, location, image_path, location_image_path,
                           status, COALESCE(is_complete, 1) AS is_complete, created_at
                    FROM products
-                   WHERE COALESCE(is_complete, 1) = 0 OR status = 'pending'
+                   WHERE COALESCE(is_complete, 1) = 0
                    ORDER BY created_at DESC"""
             ).fetchall()
             for r in rows:
@@ -1931,16 +1972,60 @@ def list_incomplete_products(keyword=None):
 
     result = []
     for p in items:
+        # การันตีขั้นสุดท้าย: แสดงเฉพาะสินค้าที่ยังลงไม่ครบ (is_complete = 0) เท่านั้น
+        if int(p.get("is_complete") or 0) != 0:
+            continue
         if not _matches(p):
             continue
         stock = int(p.get("stock_qty") or 0)
-        cost = float(p.get("latest_cost") or 0)
+        cost = float(p.get("latest_cost") or p.get("cost_price") or 0)
         sale = float(p.get("sale_price") or 0)
         p["total_cost_val"] = round(cost * stock, 2)
         p["profit"] = round(sale - cost, 2)
-        p["is_complete"] = int(p.get("is_complete") or 0)
+        p["is_complete"] = 0
         result.append(p)
     return result
+
+
+def get_product_owner(product_id: int):
+    """ดึงข้อมูลสินค้า 1 รายการแบบเต็ม (Owner) — มีราคาต้นทุน (cost_price / latest_cost)
+
+    ใช้เติมค่าใน Modal แก้ไขสินค้าฝั่ง Owner เพื่อไม่ให้ช่องราคาต้นทุนว่างและหลุดเป็น 0
+    """
+    if supabase_admin:
+        try:
+            res = (
+                supabase_admin.from_("products")
+                .select("*")
+                .eq("id", product_id)
+                .single()
+                .execute()
+            )
+            if res.data:
+                p = dict(res.data)
+                img = p.get("image_url") or p.get("image_path") or ""
+                loc_img = p.get("location_image_url") or p.get("location_image_path") or ""
+                p["image_path"] = img
+                p["image_url"] = img
+                p["location_image_path"] = loc_img
+                p["location_image_url"] = loc_img
+                p["cost_price"] = float(p.get("cost_price") or p.get("latest_cost") or 0)
+                p["latest_cost"] = p["cost_price"]
+                return p
+        except Exception as e:
+            logger.info(f"Supabase get_product_owner skipped: {e}")
+
+    try:
+        with db_session() as conn:
+            row = conn.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+            if row is not None:
+                p = dict(row)
+                p["latest_cost"] = float(p.get("latest_cost") or 0)
+                p["cost_price"] = p["latest_cost"]
+                return p
+    except Exception as e:
+        logger.warning(f"get_product_owner failed: {e}")
+    return None
 
 
 def _load_sales_for_range(days: int = 90):

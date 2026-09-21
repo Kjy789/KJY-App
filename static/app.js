@@ -314,6 +314,7 @@ function renderProductCard(p) {
         (category ? '<p class="product-card-category">' + category + '</p>' : '') +
         '<p class="product-card-name" title="' + name + '">' + name + '</p>' +
         '<p class="product-card-price">฿' + fmtMoney(price) + '</p>' +
+        (locationCode ? '<span class="product-card-location" title="ตำแหน่งจัดเก็บ"><i class="fa-solid fa-location-dot"></i> ' + locationCode + '</span>' : '') +
         '<div class="product-card-footer">' + footerHtml + '</div></div></div>';
 }
 
@@ -2254,8 +2255,16 @@ function openEditProduct(productId) {
     if (phLoc) phLoc.classList.remove('hidden');
 
     // Fetch product data
-    fetch('/api/staff/products/' + productId)
-        .then(function(res) { return res.json(); })
+    // Owner: ใช้ endpoint ของ Owner เพื่อให้ได้ 'ราคาต้นทุน' (cost_price) มาเติมในช่องจริง
+    //        (endpoint ของ Staff จะตัดต้นทุนออกเพื่อความปลอดภัย ทำให้ช่องต้นทุนว่างและหลุดเป็น 0)
+    var detailUrl = (currentRole === 'owner')
+        ? '/api/owner/products/' + productId
+        : '/api/staff/products/' + productId;
+    fetch(detailUrl)
+        .then(function(res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+        })
         .then(function(p) {
             document.getElementById('e-id').value = p.id || '';
             document.getElementById('e-name').value = p.name || '';
@@ -2305,6 +2314,17 @@ function openEditProduct(productId) {
                 };
                 if (phLoc) phLoc.classList.add('hidden');
             }
+
+            // Lightbox: แตะรูปเพื่อขยาย (stopPropagation กันเปิด File Picker)
+            var prodLabel = document.getElementById('e-name') ? document.getElementById('e-name').value : (p.name || '');
+            if (editExistingImageUrl) {
+                imgProd.onclick = function(ev) { ev.stopPropagation(); openLightbox(editExistingImageUrl, prodLabel); };
+                imgProd.classList.add('zoomable-preview');
+            } else { imgProd.onclick = null; imgProd.classList.remove('zoomable-preview'); }
+            if (editExistingLocImageUrl) {
+                imgLoc.onclick = function(ev) { ev.stopPropagation(); openLightbox(editExistingLocImageUrl, 'รูปตำแหน่งจัดเก็บ'); };
+                imgLoc.classList.add('zoomable-preview');
+            } else { imgLoc.onclick = null; imgLoc.classList.remove('zoomable-preview'); }
 
             // Show/hide delete button based on role (Owner only)
             var delBtn = document.getElementById('btn-delete-product');
@@ -2453,9 +2473,10 @@ async function submitEdit(event) {
         formData.append('location', location);
         formData.append('description', desc);
         formData.append('sale_price', price);
-        // Owner can update cost_price
-        if (cost !== '' && currentRole === 'owner') {
-            formData.append('cost_price', cost);
+        // ราคาต้นทุน (cost_price) — Owner ส่งค่าที่กรอกเสมอ (แม้เป็น 0) เพื่อไม่ให้ต้นทุนหาย
+        // Staff ไม่ส่ง (Backend จะไม่อนุญาตให้ Staff แก้ต้นทุน)
+        if (currentRole === 'owner') {
+            formData.append('cost_price', cost !== '' ? cost : '0');
         }
         // Always send image URLs - if no new image, send existing URL to preserve it
         formData.append('image_path', imageUrl);
@@ -2579,16 +2600,38 @@ async function confirmDeleteProduct() {
 var detailProduct = null;
 
 function openProductDetail(productId) {
-    fetch('/api/staff/products/' + productId)
-        .then(function(res) { return res.json(); })
+    // Owner: ดึงผ่าน endpoint ของ Owner (ได้ราคาต้นทุน) / Staff: endpoint ปลอดภัย (ไม่มีต้นทุน)
+    var detailUrl = (currentRole === 'owner')
+        ? '/api/owner/products/' + productId
+        : '/api/staff/products/' + productId;
+    fetch(detailUrl)
+        .then(function(res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+        })
         .then(function(p) {
             detailProduct = p;
             document.getElementById('detail-name').textContent = p.name || '-';
             document.getElementById('detail-sku').textContent = 'SKU: ' + (p.sku || '-');
-            document.getElementById('detail-img').src = p.image_path || p.image_url || '/static/images/placeholder.svg';
+            var imgUrl = p.image_path || p.image_url || '/static/images/placeholder.svg';
+            var isPlaceholder = !p.image_path && !p.image_url;
+            document.getElementById('detail-img').src = imgUrl;
+
             document.getElementById('detail-price').textContent = '฿' + fmtMoney(p.sale_price || 0);
             document.getElementById('detail-stock').textContent = (p.stock_qty || 0) + ' ชิ้น';
             document.getElementById('detail-location').textContent = p.location_code || '-';
+
+            // Lightbox: แตะรูปสินค้าเพื่อขยาย (เฉพาะเมื่อมีรูปจริง ไม่ใช่ placeholder)
+            var imgWrap = document.getElementById('detail-img-wrap');
+            if (imgWrap) {
+                if (isPlaceholder) {
+                    imgWrap.onclick = null;
+                    imgWrap.classList.remove('zoomable');
+                } else {
+                    imgWrap.onclick = function() { openLightbox(imgUrl, p.name || 'รูปสินค้า'); };
+                    imgWrap.classList.add('zoomable');
+                }
+            }
 
             // Tags
             var tagsHtml = '';
@@ -2596,6 +2639,24 @@ function openProductDetail(productId) {
             if (p.location_code) tagsHtml += '<span class="detail-tag">📍 ' + escHtml(p.location_code) + '</span>';
             if (p.location) tagsHtml += '<span class="detail-tag">🏪 ' + escHtml(p.location) + '</span>';
             document.getElementById('detail-tags').innerHTML = tagsHtml;
+
+            // รูปตำแหน่งจัดเก็บ (แตะเพื่อขยาย) — ซ่อนถ้าไม่มีรูป
+            var locBox = document.getElementById('detail-loc-box');
+            var locImg = document.getElementById('detail-loc-img');
+            var locSrc = p.location_image_path || p.location_image_url || '';
+            if (locBox && locImg) {
+                if (locSrc) {
+                    locImg.src = locSrc;
+                    locBox.classList.remove('hidden');
+                    locBox.onclick = function() { openLightbox(locSrc, 'รูปตำแหน่งจัดเก็บ: ' + (p.location_code || '')); };
+                    locImg.classList.add('zoomable');
+                } else {
+                    locBox.classList.add('hidden');
+                    locImg.src = '';
+                    locBox.onclick = null;
+                    locImg.classList.remove('zoomable');
+                }
+            }
 
             // Spec
             var specEl = document.getElementById('detail-spec');
@@ -2610,7 +2671,7 @@ function openProductDetail(productId) {
             var descEl = document.getElementById('detail-desc');
             var descText = '';
             if (p.min_stock) descText += 'สต็อกขั้นต่ำ: ' + p.min_stock + ' ชิ้น. ';
-            if (p.stock_qty <= (p.min_stock || 5)) descText += '⚠️ สินค้าใกล้หมดสต็อก!';
+            if ((p.stock_qty || 0) <= (p.min_stock || 5)) descText += '⚠️ สินค้าใกล้หมดสต็อก!';
             descEl.textContent = descText || 'ไม่มีข้อมูลเพิ่มเติม';
 
             document.getElementById('detail-add-btn').onclick = function() {
@@ -2624,6 +2685,33 @@ function openProductDetail(productId) {
             showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
         });
 }
+
+/**
+ * Image Preview Lightbox — เปิดรูปขยายเต็มจอ (รูปสินค้า / รูปตำแหน่งจัดเก็บ)
+ * ใช้ได้ทั้งฝั่ง Staff และ Owner จาก Modal รายละเอียดสินค้า
+ */
+function openLightbox(src, caption) {
+    if (!src) return;
+    var box = document.getElementById('modal-lightbox');
+    var img = document.getElementById('lightbox-img');
+    var cap = document.getElementById('lightbox-caption');
+    if (!box || !img) return;
+    img.src = src;
+    if (cap) cap.textContent = caption || '';
+    openModal('modal-lightbox');
+}
+
+function closeLightbox() {
+    var box = document.getElementById('modal-lightbox');
+    var img = document.getElementById('lightbox-img');
+    if (img) img.src = '';
+    if (box) closeModal('modal-lightbox');
+}
+
+// กด ESC เพื่อปิด Lightbox
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeLightbox();
+});
 
 function addToCartFromDetail() {
     if (detailProduct) {
@@ -2873,10 +2961,18 @@ loadStockTable = function(keyword) {
     var tbody = document.getElementById('stock-body');
     if (!tbody) return;
 
+    var showIncompleteOnly = (currentStockFilter === 'incomplete' && currentRole === 'owner');
+    var hint = document.getElementById('incomplete-hint');
+    if (hint) {
+        if (showIncompleteOnly) hint.classList.remove('hidden');
+        else hint.classList.add('hidden');
+    }
+
     tbody.innerHTML = '<tr><td colspan="8" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลด...</td></tr>';
 
     try {
-        var url = '/api/staff/products?';
+        // แท็บ "สินค้ายังลงไม่ครบ": ดึงเฉพาะรายการที่ is_complete = 0 เท่านั้น (ไม่โหลดสินค้าทั้งหมด)
+        var url = showIncompleteOnly ? '/api/owner/products/incomplete?' : '/api/staff/products?';
         if (keyword) url += 'keyword=' + encodeURIComponent(keyword) + '&';
 
         fetch(url)
@@ -2885,13 +2981,19 @@ loadStockTable = function(keyword) {
                 return res.json();
             })
             .then(function(products) {
+                // การันตีขั้นสุดท้ายบน Client: เหลือเฉพาะ is_complete = 0 เท่านั้น
+                if (showIncompleteOnly && Array.isArray(products)) {
+                    products = products.filter(function(p) { return parseInt(p.is_complete) === 0 || p.is_complete === false; });
+                }
                 if (!products || products.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="8" class="empty">ไม่พบรายการสินค้า</td></tr>';
-                    updateStockSummaryStats([]);
+                    tbody.innerHTML = showIncompleteOnly
+                        ? '<tr><td colspan="8" class="empty">🎉 ไม่มีสินค้าที่ยังลงไม่ครบ — ข้อมูลทุกชิ้นสมบูรณ์แล้ว</td></tr>'
+                        : '<tr><td colspan="8" class="empty">ไม่พบรายการสินค้า</td></tr>';
+                    updateStockSummaryStats(showIncompleteOnly ? [] : (products || []));
                     return;
                 }
 
-                updateStockSummaryStats(products);
+                if (!showIncompleteOnly) updateStockSummaryStats(products);
 
                 var html = '';
                 for (var i = 0; i < products.length; i++) {

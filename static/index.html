@@ -623,25 +623,53 @@
     <div class="modal medium">
         <div class="modal-head"><h3 id="detail-title"><i class="fa-solid fa-box"></i> รายละเอียดสินค้า</h3><button class="close" onclick="closeModal('modal-detail')">&times;</button></div>
         <div class="modal-body">
+            <!-- รูปสินค้า + ชื่อ/SKU (แตะรูปเพื่อขยาย) -->
             <div class="detail-hero">
-                <img id="detail-img" src="" class="detail-img" alt="" onerror="this.src='/static/images/placeholder.svg'">
+                <div class="detail-img-wrap" id="detail-img-wrap" title="แตะเพื่อดูรูปขยาย">
+                    <img id="detail-img" src="" class="detail-img" alt="" onerror="this.src='/static/images/placeholder.svg'">
+                    <span class="zoom-hint"><i class="fa-solid fa-magnifying-glass-plus"></i></span>
+                </div>
                 <div class="detail-info">
                     <h2 id="detail-name" style="font-size:20px;font-weight:700;margin-bottom:4px"></h2>
                     <p id="detail-sku" style="font-size:12px;color:var(--text-muted);margin-bottom:8px"></p>
                     <div class="detail-tags" id="detail-tags"></div>
                 </div>
             </div>
-            <div class="detail-spec" id="detail-spec"></div>
+
+            <!-- ราคาขาย / สต็อก / ตำแหน่ง (อ่านง่าย สมมาตรทุกจอ) -->
             <div class="detail-stats">
-                <div class="detail-stat"><small>ราคาขาย</small><strong id="detail-price" style="color:var(--blue);font-size:22px">฿0</strong></div>
-                <div class="detail-stat"><small>สต็อกคงเหลือ</small><strong id="detail-stock" style="font-size:22px">0</strong></div>
-                <div class="detail-stat"><small>ตำแหน่ง</small><strong id="detail-location" style="font-size:14px;color:var(--text-secondary)">-</strong></div>
+                <div class="detail-stat"><small>ราคาขาย</small><strong id="detail-price" style="color:var(--blue)">฿0</strong></div>
+                <div class="detail-stat"><small>สต็อกคงเหลือ</small><strong id="detail-stock">0</strong></div>
+                <div class="detail-stat"><small>ตำแหน่งจัดเก็บ</small><strong id="detail-location" style="font-size:14px;color:var(--text-secondary)">-</strong></div>
             </div>
+
+            <!-- รูปตำแหน่งจัดเก็บ (แตะเพื่อขยาย) -->
+            <div class="detail-loc-box hidden" id="detail-loc-box">
+                <div class="detail-loc-head">
+                    <span><i class="fa-solid fa-location-dot"></i> รูปตำแหน่งจัดเก็บ</span>
+                    <span class="hint-tap"><i class="fa-solid fa-magnifying-glass-plus"></i> แตะรูปเพื่อขยาย</span>
+                </div>
+                <div class="detail-loc-wrap">
+                    <img id="detail-loc-img" class="detail-loc-img" src="" alt="รูปตำแหน่งจัดเก็บ" onerror="document.getElementById('detail-loc-box').classList.add('hidden')">
+                    <span class="zoom-hint"><i class="fa-solid fa-magnifying-glass-plus"></i></span>
+                </div>
+            </div>
+
+            <div class="detail-spec" id="detail-spec"></div>
             <div class="detail-desc" id="detail-desc" style="font-size:13px;color:var(--text-secondary);padding:12px;background:var(--bg);border-radius:var(--radius-md)"></div>
             <button class="btn-primary" id="detail-add-btn" onclick="addToCartFromDetail()" style="width:100%;justify-content:center;padding:12px">
                 <i class="fa-solid fa-cart-plus"></i> เพิ่มลงตะกร้า
             </button>
         </div>
+    </div>
+</div>
+
+<!-- Image Lightbox (ขยายดูรูปสินค้า / รูปตำแหน่งจัดเก็บ) -->
+<div class="modal-overlay hidden" id="modal-lightbox" onclick="closeLightbox()">
+    <div class="lightbox-inner" onclick="event.stopPropagation()">
+        <button class="lightbox-close" onclick="closeLightbox()" title="ปิด">&times;</button>
+        <img id="lightbox-img" src="" alt="">
+        <p id="lightbox-caption" class="lightbox-caption"></p>
     </div>
 </div>
 

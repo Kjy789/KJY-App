@@ -2541,3 +2541,242 @@ input, select, textarea {
     .btn-void { padding: 5px 9px; font-size: 11px; }
     .report-tabs button { font-size: 13px; }
 }
+/* ============================================================
+   STAFF CATALOG & PRODUCT DETAIL — Symmetric + Mobile Responsive
+   (append last = wins cascade)
+   ============================================================ */
+
+/* การ์ดสินค้า: รูป/ราคา/สต็อก/ตำแหน่ง จัดเรียงอ่านง่าย ไม่เบียดซ้อน */
+.product-card {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+.product-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px 12px;
+    min-width: 0;
+}
+.product-card-name {
+    font-size: 13.5px;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    min-height: 2.7em;
+}
+.product-card-location {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--blue);
+    background: var(--blue-light);
+    border-radius: var(--radius-full);
+    padding: 3px 9px;
+    width: fit-content;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.product-card-location i { font-size: 10px; }
+.product-card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: auto;
+}
+.product-card-footer .btn-view-loc { flex-shrink: 0; }
+
+/* รูปใน Modal รายละเอียด — แตะเพื่อขยายได้ */
+.detail-img-wrap {
+    position: relative;
+    width: 140px;
+    height: 140px;
+    flex-shrink: 0;
+    border-radius: var(--radius-2xl);
+    overflow: hidden;
+    cursor: zoom-in;
+    border: 1px solid var(--border);
+    background: #F8FAFC;
+}
+.detail-img-wrap .detail-img {
+    width: 100%;
+    height: 100%;
+    border: none;
+    border-radius: 0;
+}
+.detail-img-wrap .zoom-hint,
+.detail-loc-wrap .zoom-hint {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: rgba(15, 23, 42, 0.65);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    pointer-events: none;
+}
+
+/* กล่องรูปตำแหน่งจัดเก็บใน Modal รายละเอียด */
+.detail-loc-box {
+    margin-top: 14px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-lg);
+    padding: 12px 14px;
+    background: var(--bg);
+}
+.detail-loc-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 10px;
+}
+.detail-loc-head .hint-tap {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.detail-loc-wrap {
+    position: relative;
+    max-width: 100%;
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    cursor: zoom-in;
+}
+.detail-loc-img {
+    display: block;
+    width: 100%;
+    max-height: 300px;
+    object-fit: contain;
+    background: #F8FAFC;
+    border-radius: var(--radius-lg);
+}
+
+/* Stats ใน Modal รายละเอียด — สมมาตรทุกจอ */
+.detail-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-top: 14px;
+}
+.detail-stat strong { font-size: 15px; word-break: break-word; }
+.detail-stat small { display: block; }
+.detail-spec { margin-top: 14px; }
+.detail-desc { margin-top: 10px; }
+#detail-add-btn { margin-top: 14px; display: flex; }
+
+/* ---- Image Lightbox ---- */
+#modal-lightbox {
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(15, 23, 42, 0.88) !important;
+    z-index: 3000 !important;
+}
+.lightbox-inner {
+    position: relative;
+    max-width: min(94vw, 1100px);
+    max-height: 92vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    animation: lightboxIn 0.22s ease;
+}
+@keyframes lightboxIn {
+    from { opacity: 0; transform: scale(0.94); }
+    to { opacity: 1; transform: scale(1); }
+}
+#lightbox-img {
+    max-width: 100%;
+    max-height: 78vh;
+    object-fit: contain;
+    border-radius: var(--radius-2xl);
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+    background: #fff;
+}
+.lightbox-caption {
+    color: #E2E8F0;
+    font-size: 14px;
+    font-weight: 600;
+    text-align: center;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.lightbox-close {
+    position: absolute;
+    top: -44px;
+    right: 0;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    background: rgba(15, 23, 42, 0.6);
+    color: #fff;
+    font-size: 20px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.lightbox-close:hover { background: rgba(239, 68, 68, 0.85); }
+
+/* รูป Preview ใน Modal แก้ไข — แตะเพื่อขยายได้ (ไม่เปิด File Picker) */
+.zoomable-preview {
+    cursor: zoom-in !important;
+    pointer-events: auto;
+}
+
+/* ---- Responsive: Product Detail Modal ---- */
+@media (max-width: 640px) {
+    .detail-hero {
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        gap: 12px;
+    }
+    .detail-img-wrap { width: 170px; height: 170px; }
+    .detail-info { width: 100%; }
+    .detail-tags { justify-content: center; }
+    .detail-stats { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .detail-stat { padding: 10px 8px; }
+    .detail-stat strong { font-size: 13.5px; }
+    .detail-stat small { font-size: 9px; }
+    .detail-loc-img { max-height: 220px; }
+}
+
+/* ---- Responsive: Product Card Grid (Staff Catalog) ---- */
+@media (max-width: 480px) {
+    .product-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 10px; }
+    .product-card-body { padding: 8px 10px 10px; gap: 5px; }
+    .product-card-name { font-size: 12.5px; }
+    .product-card-price { font-size: 14px; }
+    .product-card-location { font-size: 10px; padding: 3px 7px; }
+    .btn-view-loc { width: 30px; height: 30px; font-size: 11px; }
+    .product-card-footer .btn-add-cart { padding: 7px 10px; font-size: 11.5px; }
+}
+
+@media (min-width: 481px) and (max-width: 768px) {
+    .product-grid { grid-template-columns: repeat(3, 1fr) !important; }
+}
