@@ -1207,6 +1207,13 @@ async function loadFinanceReport(days) {
         var res = await fetch('/api/owner/finance/analytics?period=' + period + '&days=' + span);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         var data = await res.json();
+        // ป้องกันข้อมูล API ที่ส่งมาไม่ครบ ทำให้หน้าและกราฟหายทั้งชุด
+        data = data || {};
+        data.labels = Array.isArray(data.labels) ? data.labels : [];
+        data.revenue = Array.isArray(data.revenue) ? data.revenue : [];
+        data.cost = Array.isArray(data.cost) ? data.cost : [];
+        data.profit = Array.isArray(data.profit) ? data.profit : [];
+        data.rows = Array.isArray(data.rows) ? data.rows : [];
 
         // ---- Stat Cards ----
         var totals = data.totals || {};
@@ -1242,7 +1249,7 @@ async function loadFinanceReport(days) {
             }
         }
 
-        renderFinanceChart(data);
+        await renderFinanceChart(data);
     } catch (err) {
         console.error('Finance report error:', err);
         if (tbody) {
@@ -1261,7 +1268,7 @@ async function loadFinanceReport(days) {
  * - แท่ง (Bar): รายรับรวม / ต้นทุนสินค้าที่ขาย
  * - เส้น (Line): กำไรสุทธิ
  */
-function renderFinanceChart(data) {
+async function renderFinanceChart(data) {
     var canvas = document.getElementById('finance-chart');
     var emptyEl = document.getElementById('finance-chart-empty');
     if (!canvas) return;
@@ -1274,6 +1281,11 @@ function renderFinanceChart(data) {
     var hasData = false;
     for (var i = 0; i < labels.length; i++) {
         if ((parseFloat(revenue[i]) || 0) !== 0 || (parseFloat(cost[i]) || 0) !== 0) { hasData = true; break; }
+    }
+
+    // Chart.js ถูกโหลดจาก CDN ซึ่งอาจช้า/ถูกบล็อกบนมือถือ จึงลองโหลดสำรองก่อน
+    if (typeof Chart === 'undefined') {
+        await ensureFinanceChartLibrary();
     }
 
     if (typeof Chart === 'undefined') {
@@ -1377,6 +1389,32 @@ function renderFinanceChart(data) {
             }
         }
     });
+}
+
+var financeChartLibraryPromise = null;
+
+function ensureFinanceChartLibrary() {
+    if (typeof Chart !== 'undefined') return Promise.resolve(true);
+    if (financeChartLibraryPromise) return financeChartLibraryPromise;
+
+    var sources = [
+        'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',
+        'https://unpkg.com/chart.js@4.4.1/dist/chart.umd.js'
+    ];
+    financeChartLibraryPromise = new Promise(function(resolve) {
+        var trySource = function(index) {
+            if (typeof Chart !== 'undefined') { resolve(true); return; }
+            if (index >= sources.length) { resolve(false); return; }
+            var script = document.createElement('script');
+            script.src = sources[index];
+            script.async = true;
+            script.onload = function() { resolve(typeof Chart !== 'undefined'); };
+            script.onerror = function() { trySource(index + 1); };
+            document.head.appendChild(script);
+        };
+        trySource(0);
+    });
+    return financeChartLibraryPromise;
 }
 
 
@@ -2616,6 +2654,8 @@ function openProductDetail(productId) {
         })
         .then(function(p) {
             detailProduct = p;
+            var detailTitleIcon = document.querySelector('#detail-title i');
+            if (detailTitleIcon) detailTitleIcon.className = 'fa-solid fa-bag-shopping';
             document.getElementById('detail-name').textContent = p.name || '-';
             document.getElementById('detail-sku').textContent = 'SKU: ' + (p.sku || '-');
             var imgUrl = p.image_path || p.image_url || '/static/images/placeholder.svg';
@@ -2681,7 +2721,7 @@ function openProductDetail(productId) {
             descEl.textContent = descText || 'ไม่มีข้อมูลเพิ่มเติม';
 
             var detailAddBtn = document.getElementById('detail-add-btn');
-            detailAddBtn.innerHTML = '<i class="fa-solid fa-cart-shopping"></i> เพิ่มลงตระกร้า';
+            detailAddBtn.innerHTML = '<i class="fa-solid fa-cart-shopping"></i> เพิ่มลงตะกร้า';
             detailAddBtn.onclick = function() {
                 addToCart(p.id, p.name, p.sale_price || 0, p.stock_qty || 0, p.image_path || p.image_url || '');
                 closeModal('modal-detail');
