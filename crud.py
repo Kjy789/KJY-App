@@ -146,7 +146,9 @@ def _cloud_row_to_local_shape(row: dict, with_cost: bool = True) -> dict:
     p["image_path"] = p.get("image_path") or p.get("image_url") or ""
     p["location_image_path"] = p.get("location_image_path") or p.get("location_image_url") or ""
     if with_cost:
-        p["latest_cost"] = float(p.get("latest_cost") or p.get("cost_price") or 0)
+        cost = float(p.get("cost_price") or p.get("latest_cost") or 0)
+        p["latest_cost"] = cost
+        p["cost_price"] = cost
     else:
         p.pop("cost_price", None)
         p.pop("latest_cost", None)
@@ -554,8 +556,8 @@ def update_product_staff(product_id: int, performed_by: str = "staff", **fields)
     - Owner: แก้ไข cost_price ได้ (ผ่าน allow_cost_price=True)
     - ค่ารวมถึง '' (ค่าว่าง) จะถูกอัปเดตจริง — เมื่อผู้ใช้ลบข้อความแล้วกดบันทึก ค่าใน DB จะถูกลบออก (เซ็ตเป็น NULL) ด้วย
     """
-    # ถ้าไม่มีการส่ง allow_cost_price=True จะกรอง cost_price ออก
-    allow_cost_price = fields.pop("allow_cost_price", False)
+    # อนุญาตให้อัปเดตราคาต้นทุนเสมอเมื่อมีการส่งค่าเข้ามา
+    allow_cost_price = fields.pop("allow_cost_price", True)
 
     allowed_keys = {
         "name", "category", "sku", "sale_price", "stock_qty", "cost_price",
@@ -564,8 +566,6 @@ def update_product_staff(product_id: int, performed_by: str = "staff", **fields)
         "front_stock", "warehouse_stock"
     }
 
-    # ฟิลด์ข้อความและรูปภาพที่สามารถเป็นค่าว่างได้ — เมื่อผู้ใช้ลบข้อความ
-    # จะแปลงค่าว่าง "" ให้เป็น None (NULL) ในฐานข้อมูล
     TEXT_FIELDS_NULLABLE = {
         "sku", "category", "location_code", "location", "description",
         "image_path", "location_image_path"
@@ -576,13 +576,11 @@ def update_product_staff(product_id: int, performed_by: str = "staff", **fields)
         if k not in allowed_keys:
             continue
         if k == "name":
-            # ชื่อสินค้าเป็นฟิลด์บังคับ ไม่ให้เซ็ตเป็นค่าว่างหรือ NULL
             if isinstance(v, str) and v.strip():
                 filtered_fields["name"] = v.strip()
             continue
 
         if isinstance(v, str):
-            # แปลงค่าว่าง "" หรือช่องว่างล้วน -> None (NULL) สำหรับฟิลด์ที่อนุญาต
             if k in TEXT_FIELDS_NULLABLE and v.strip() == "":
                 filtered_fields[k] = None
             elif k in TEXT_FIELDS_NULLABLE:
@@ -594,10 +592,6 @@ def update_product_staff(product_id: int, performed_by: str = "staff", **fields)
                 filtered_fields[k] = None
         else:
             filtered_fields[k] = v
-
-    # Staff ไม่มีสิทธิ์แก้ไขต้นทุน (กรอง cost_price ออก)
-    if not allow_cost_price:
-        filtered_fields.pop("cost_price", None)
 
     # คำนวณ stock_qty ใหม่ถ้ามีการส่ง front_stock / warehouse_stock
     if "front_stock" in filtered_fields or "warehouse_stock" in filtered_fields:
@@ -1697,8 +1691,11 @@ def _sync_pending_product_to_cloud(ocr_name, unit_cost, local_product_id):
 
         payload = {
             "name": ocr_name,
-            "cost_price": unit_cost,
-            "stock_qty": total_stock,
+            "cost_price": float(unit_cost or 0),
+            "sale_price": 0.0,
+            "stock_qty": int(total_stock or 0),
+            "front_stock": int(total_stock or 0),
+            "warehouse_stock": 0,
             "status": "active",
         }
         if _cloud_is_complete_available():
@@ -1918,28 +1915,43 @@ def list_incomplete_products(keyword=None):
         return kw_lower in hay
 
     # 1) Supabase Cloud
-    if supabase_admin and _cloud_is_complete_available():
+    if supabase_admin:
         try:
-            try:
+            res = None
+            if _cloud_is_complete_available():
+                try:
+                    res = (
+                        supabase_admin.from_("products")
+                        .select("*")
+                        .or_("is_complete.eq.false,status.eq.pending")
+                        .order("created_at", desc=True)
+                        .limit(500)
+                        .execute()
+                    )
+                except Exception:
+                    res = (
+                        supabase_admin.from_("products")
+                        .select("*")
+                        .eq("is_complete", False)
+                        .order("created_at", desc=True)
+                        .limit(500)
+                        .execute()
+                    )
+            else:
+                # กรณี Supabase ยังไม่มีคอลัมน์ is_complete:
+                # รายการที่ยังลงไม่ครบ = status='pending' หรือ sale_price=0 หรือขาด SKU หรือขาดรูป
                 res = (
                     supabase_admin.from_("products")
                     .select("*")
-                    .or_("is_complete.eq.false,status.eq.pending")
+                    .or_("status.eq.pending,sale_price.eq.0,sku.is.null,image_url.is.null")
                     .order("created_at", desc=True)
                     .limit(500)
                     .execute()
                 )
-            except Exception:
-                res = (
-                    supabase_admin.from_("products")
-                    .select("*")
-                    .eq("is_complete", False)
-                    .order("created_at", desc=True)
-                    .limit(500)
-                    .execute()
-                )
-            for r in (res.data or []):
+
+            for r in ((res.data if res else None) or []):
                 p = _cloud_row_to_local_shape(r, with_cost=True)
+                p["is_complete"] = 0
                 key = str(p.get("name") or "").strip().lower()
                 if key and key in seen_names:
                     continue

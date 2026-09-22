@@ -1895,9 +1895,7 @@ body {
 }
 
 /* ============================================================
-   RESPONSIVE UI FIXES - iPad & Mobile
-   - Unlock fixed widths, use flex/grid + relative units
-   - Enable smooth touch scrolling
+   RESPONSIVE — Layout, Touch Scrolling, Mobile Reports
    ============================================================ */
 html, body {
     width: 100%;
@@ -1914,7 +1912,7 @@ html, body {
 
 .app-layout {
     display: grid;
-    grid-template-columns: 72px minmax(0, 1fr) 340px;
+    grid-template-columns: var(--sidebar-w) 1fr var(--cart-w);
     min-height: 100vh;
     width: 100%;
     max-width: 100%;
@@ -1925,11 +1923,6 @@ html, body {
     min-width: 0;
     overflow-x: hidden;
 }
-
-/* Fix fixed-width elements */
-.sidebar { width: 72px; flex-shrink: 0; }
-.cart-panel { width: 340px; flex-shrink: 0; }
-.cart-panel, .sidebar { max-width: 40vw; }
 
 /* Smooth scrolling containers */
 .table-scroll, .grid-wrap, .cart-items, .assistant-chat, .pos-bar {
@@ -1945,9 +1938,9 @@ button, .btn-primary, .btn-outline, .btn-green, .btn-danger, .btn-icon,
     user-select: none;
 }
 
-/* Inputs on mobile */
+/* Inputs on mobile — prevent iOS auto-zoom */
 input, select, textarea {
-    font-size: 16px; /* prevent iOS zoom on focus */
+    font-size: 16px;
 }
 
 /* ============ SALES ASSISTANT - Bottom-Right + Draggable ============ */
@@ -2028,7 +2021,7 @@ input, select, textarea {
     width: 100%;
 }
 
-/* Table cards scroll horizontally on mobile without breaking layout */
+/* Table cards: enable horizontal scroll on all screens */
 .table-card {
     max-width: 100%;
     overflow: hidden;
@@ -2036,6 +2029,7 @@ input, select, textarea {
 .table-scroll {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
 }
 .data-table {
     min-width: 620px;
@@ -2220,92 +2214,6 @@ input, select, textarea {
     .sidebar-toggle { display: none; }
 }
 
-/* ============================================================
-   SIDEBAR FIX — Hover-to-Expand overlay + Touch support
-   (overrides earlier sidebar rules; appended last = wins cascade)
-   ============================================================ */
-:root {
-    --sidebar-w: 70px;
-    --sidebar-expanded-w: 250px;
-}
-
-/* Sidebar = fixed overlay so it floats over page (no layout push) */
-.sidebar {
-    position: fixed !important;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    height: 100vh;
-    width: var(--sidebar-w) !important;
-    align-items: center;
-    overflow: hidden !important;
-    overflow-y: auto !important;
-    z-index: 1000 !important;
-    transition: width 0.3s ease !important;
-    box-shadow: 2px 0 14px rgba(0, 0, 0, 0.18);
-}
-
-/* Collapsed state: icons only, labels hidden (no text overflow) */
-.sidebar .sb-label,
-.sidebar .nav-item span,
-.sidebar .role-switch span {
-    display: none;
-    white-space: nowrap;
-    opacity: 0;
-    max-width: 0;
-    overflow: hidden;
-    transition: opacity 0.3s ease, max-width 0.3s ease;
-}
-
-/* ---- Hover OR .expanded (touch) -> slide out to 250px ---- */
-.sidebar:hover,
-.sidebar.expanded {
-    width: var(--sidebar-expanded-w) !important;
-    align-items: stretch;
-    overflow-x: hidden !important;
-}
-
-.sidebar:hover .sb-label,
-.sidebar.expanded .sb-label,
-.sidebar:hover .nav-item span,
-.sidebar.expanded .nav-item span,
-.sidebar:hover .role-switch span,
-.sidebar.expanded .role-switch span {
-    display: inline;
-    opacity: 1;
-    max-width: 220px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-/* Nav items stretch full width when expanded */
-.sidebar:hover .nav-item,
-.sidebar.expanded .nav-item,
-.sidebar:hover .role-switch,
-.sidebar.expanded .role-switch {
-    width: 100%;
-    justify-content: flex-start;
-    padding: 0 13px;
-    gap: 12px;
-}
-
-.sidebar:hover .sidebar-nav,
-.sidebar.expanded .sidebar-nav,
-.sidebar:hover .sidebar-role,
-.sidebar.expanded .sidebar-role {
-    align-items: stretch;
-}
-
-/* Brand: row layout when expanded */
-.sidebar:hover .sidebar-brand,
-.sidebar.expanded .sidebar-brand {
-    flex-direction: row;
-    justify-content: flex-start;
-    gap: 12px;
-    padding-left: 4px;
-}
-
 /* ---- Hamburger toggle button (touch / tablets only) ---- */
 .sidebar-toggle {
     display: none;
@@ -2381,60 +2289,6 @@ input, select, textarea {
         bottom: 152px !important;
         width: min(90vw, 340px) !important;
     }
-}
-
-/* ============================================================
-   SIDEBAR BRAND — Vertical Logo + Label (Collapsed / Hover)
-   โลโก้ + ข้อความ "KJY WAREHOUSE" อยู่ต่อกันแนวตั้ง (โลโก้บน ข้อความล่าง)
-   Collapsed: เห็นเฉพาะโลโก้วงกลมตรงกลาง / Hover: แสดงข้อความใต้โลโก้ fade-in
-   (วางไว้ท้ายสุด ชนะ cascade ทั้งหมด)
-   ============================================================ */
-.sidebar-brand {
-    display: flex !important;
-    flex-direction: column !important;
-    align-items: center !important;
-    justify-content: center !important;
-    text-align: center !important;
-    gap: 8px !important;
-    width: 100% !important;
-}
-
-.sidebar .sb-label {
-    display: none !important;
-    visibility: hidden !important;
-    opacity: 0 !important;
-    white-space: nowrap !important;
-    font-size: 11px !important;
-    letter-spacing: 0.1em !important;
-    transition: opacity 0.3s ease, visibility 0.3s ease !important;
-}
-
-.sidebar:hover .sidebar-brand,
-.sidebar.expanded .sidebar-brand {
-    flex-direction: column !important;
-    justify-content: center !important;
-}
-
-.sidebar:hover .sidebar .sb-label,
-.sidebar.expanded .sidebar .sb-label,
-.sidebar:hover .sb-label,
-.sidebar.expanded .sb-label {
-    display: inline-block !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    white-space: nowrap !important;
-    animation: sidebarLabelFadeIn 0.3s ease forwards !important;
-}
-
-@keyframes sidebarLabelFadeIn {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
-/* Keep legacy mobile hide behavior for phones */
-@media (max-width: 768px) {
-    .sidebar { display: none; }
-    .sidebar-toggle { display: none; }
 }
 /* ============================================================
    REPORTS VIEW — Full Width + Responsive (Mobile / iPad / Desktop)
@@ -2525,13 +2379,25 @@ input, select, textarea {
         gap: 8px;
     }
     .report-tabs button { width: 100%; flex: 1 1 auto; }
-    #sales-stats-cards {
+    /* Stats cards ทุกชุด → 1 คอลัมน์เต็มความกว้าง */
+    #sales-stats-cards,
+    #product-stats-cards,
+    #finance-stats-cards {
         grid-template-columns: 1fr;
         padding: 10px 14px;
         gap: 8px;
     }
     .stat-card { padding: 12px 14px; }
     .table-card { margin: 10px 14px 12px; }
+    /* Table horizontal scroll */
+    .table-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .data-table {
+        min-width: 620px;
+        width: 100%;
+    }
 }
 
 /* ---- Mobile เล็ก (≤480px) ---- */
@@ -2551,7 +2417,10 @@ input, select, textarea {
     display: flex;
     flex-direction: column;
     min-width: 0;
+    cursor: pointer;
 }
+.product-card:hover { transform: translateY(-2px); }
+.product-card:active { transform: scale(0.98); }
 .product-card-body {
     display: flex;
     flex-direction: column;

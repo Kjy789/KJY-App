@@ -307,7 +307,12 @@ function renderProductCard(p) {
             '<i class="fa-solid fa-plus"></i> เพิ่ม</button>' + locBtn;
     }
 
-    return '<div class="product-card" data-id="' + p.id + '">' +
+    // เมื่อกดที่รูปภาพ หรือ card ทั้งหมด ให้เปิด Lightbox ดูรูปขยาย
+    var openLightboxAttr = imgSrc
+        ? 'onclick="event.stopPropagation(); openLightbox(\'' + escHtml(imgSrc) + '\', \'' + escHtml(rawName) + '\')"'
+        : '';
+
+    return '<div class="product-card" data-id="' + p.id + '" ' + openLightboxAttr + '>' +
         '<div class="product-card-img-wrap">' + imgHtml + placeholderHtml +
         '<span class="stock-badge ' + stockBadgeClass + '">' + stockBadgeLabel + '</span></div>' +
         '<div class="product-card-body">' +
@@ -770,7 +775,7 @@ async function loadStockTable(keyword) {
 
     tbody.innerHTML = '<tr><td colspan="7" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลด...</td></tr>';
 
-    var showIncompleteOnly = (currentStockFilter === 'incomplete' && currentRole === 'owner');
+    var showIncompleteOnly = (currentStockFilter === 'incomplete');
     var hint = document.getElementById('incomplete-hint');
     if (hint) {
         if (showIncompleteOnly) hint.classList.remove('hidden');
@@ -778,7 +783,11 @@ async function loadStockTable(keyword) {
     }
 
     try {
-        var url = showIncompleteOnly ? '/api/owner/products/incomplete?' : '/api/staff/products?';
+        // Staff และ Owner ใช้ endpoint เดียวกันสำหรับดึงสินค้ายังลงไม่ครบ
+        // บั๊ก HTTP 422 แก้โดยเปลี่ยนจาก /api/staff/products?is_complete=false เป็น endpoint เฉพาะ
+        var url = showIncompleteOnly
+            ? '/api/staff/products/incomplete?'
+            : '/api/staff/products?';
         if (keyword) url += 'keyword=' + encodeURIComponent(keyword) + '&';
 
         var res = await fetch(url);
@@ -816,7 +825,8 @@ async function loadStockTable(keyword) {
 
             var thumbHtml = '';
             if (imgSrc) {
-                thumbHtml = '<img src="' + escHtml(imgSrc) + '" class="product-thumb" alt="' + name + '" onerror="this.style.display=\'none\'">';
+                // กดที่รูป thumbnail ในตารางคลังสินค้า → เปิด Lightbox ขยายดู
+                thumbHtml = '<img src="' + escHtml(imgSrc) + '" class="product-thumb" alt="' + name + '" onclick="event.stopPropagation(); openLightbox(\'' + escHtml(imgSrc) + '\', \'' + escHtml(rawName) + '\')" onerror="this.style.display=\'none\'">';
             } else {
                 thumbHtml = '<div class="product-thumb-icon"><i class="fa-solid fa-image"></i></div>';
             }
@@ -856,15 +866,12 @@ async function loadStockTable(keyword) {
 }
 
 /**
- * สลับตัวกรองหน้าคลังสินค้า (Owner เท่านั้น)
+ * สลับตัวกรองหน้าคลังสินค้า (Staff และ Owner)
  * - 'all'        : สินค้าทั้งหมด
  * - 'incomplete' : เฉพาะสินค้าที่ยังลงไม่ครบ (is_complete = 0) เพื่อกดปุ่มแก้ไขเติมข้อมูล
+ *                  Staff ใช้ตรวจสอบสินค้าที่ยังขาดข้อมูลได้ (ไม่เห็นต้นทุน)
  */
 function switchStockFilter(filter) {
-    if (filter !== 'all' && currentRole !== 'owner') {
-        showToast('ต้องเข้าสู่โหมด Owner เพื่อดูรายการสินค้าที่ยังลงไม่ครบ', 'error');
-        return;
-    }
     currentStockFilter = (filter === 'incomplete') ? 'incomplete' : 'all';
 
     var btnAll = document.getElementById('btn-stock-filter-all');
@@ -882,12 +889,10 @@ function switchStockFilter(filter) {
 async function refreshIncompleteBadge() {
     var badge = document.getElementById('incomplete-count-badge');
     if (!badge) return;
-    if (currentRole !== 'owner') {
-        badge.textContent = '0';
-        return;
-    }
     try {
-        var res = await fetch('/api/owner/products/incomplete');
+        // ใช้ endpoint /api/staff/products/incomplete ได้ทั้ง Staff และ Owner
+        // ไม่ต้องใช้ /api/owner/products/incomplete ที่อาจเกิด HTTP 422
+        var res = await fetch('/api/staff/products/incomplete');
         if (!res.ok) throw new Error('HTTP ' + res.status);
         var list = await res.json();
         badge.textContent = (list && list.length) ? list.length : 0;
@@ -1454,9 +1459,9 @@ async function aiScanProductImage(file) {
             var catField = document.getElementById('a-cat');
             if (catField && !catField.value) catField.value = data.category;
         }
-        // ข้อ 3: ไม่กรอกรายละเอียดอัตโนมัติ ให้ผู้ใช้เป็นคนกดเองหรือพิมพ์เอง
+        // ข้อ 3: AI ใช้ข้อความตรงตำแหน่งจัดเก็บ (a-location) ไม่ใช่รหัสตำแหน่ง (a-loc) ผู้ใช้จะกรอกรหัสตำแหน่งเอง
         if (data.suggested_location) {
-            var locField = document.getElementById('a-loc');
+            var locField = document.getElementById('a-location');
             if (locField && !locField.value) locField.value = data.suggested_location;
         }
         showToast('AI วิเคราะห์รูปสินค้าสำเร็จ ✨', 'success');
@@ -1565,7 +1570,7 @@ async function submitAdd(event) {
         formData.append('location', locationText);
         formData.append('sale_price', price);
         formData.append('description', desc);
-        if (cost) formData.append('cost_price', cost);
+        if (cost !== undefined && cost !== null && cost !== '') formData.append('cost_price', cost);
         if (imageUrl) formData.append('image_path', imageUrl);
         if (locationImageUrl) formData.append('location_image_path', locationImageUrl);
         if (prodImageFile) formData.append('file', prodImageFile);
@@ -1986,9 +1991,11 @@ async function handleReceiptUpload(event) {
 
 function confirmOcr() {
     if (!ocrReceiptData) return;
-    showToast('✅ บันทึกข้อมูลจากบิลเข้าคลังเรียบร้อยแล้ว', 'success');
+    showToast('✅ บันทึกข้อมูลจากบิลเข้าคลังเรียบร้อยแล้ว — สลับไปที่สินค้ายังลงไม่ครบ', 'success');
     resetOcr();
-    loadOwnerReports();
+    currentStockFilter = 'incomplete';
+    switchView('stock');
+    switchStockFilter('incomplete');
 }
 
 function resetOcr() {
@@ -2257,13 +2264,11 @@ function openEditProduct(productId) {
     // Fetch product data
     // Owner: ใช้ endpoint ของ Owner เพื่อให้ได้ 'ราคาต้นทุน' (cost_price) มาเติมในช่องจริง
     //        (endpoint ของ Staff จะตัดต้นทุนออกเพื่อความปลอดภัย ทำให้ช่องต้นทุนว่างและหลุดเป็น 0)
-    var detailUrl = (currentRole === 'owner')
-        ? '/api/owner/products/' + productId
-        : '/api/staff/products/' + productId;
-    fetch(detailUrl)
+    // ดึงข้อมูลสินค้า (ลอง endpoint owner ก่อนเพื่อให้ได้ cost_price เสมอ)
+    fetch('/api/owner/products/' + productId)
         .then(function(res) {
-            if (!res.ok) throw new Error('HTTP ' + res.status);
-            return res.json();
+            if (res.ok) return res.json();
+            return fetch('/api/staff/products/' + productId).then(function(r) { return r.json(); });
         })
         .then(function(p) {
             document.getElementById('e-id').value = p.id || '';
@@ -2473,10 +2478,9 @@ async function submitEdit(event) {
         formData.append('location', location);
         formData.append('description', desc);
         formData.append('sale_price', price);
-        // ราคาต้นทุน (cost_price) — Owner ส่งค่าที่กรอกเสมอ (แม้เป็น 0) เพื่อไม่ให้ต้นทุนหาย
-        // Staff ไม่ส่ง (Backend จะไม่อนุญาตให้ Staff แก้ต้นทุน)
-        if (currentRole === 'owner') {
-            formData.append('cost_price', cost !== '' ? cost : '0');
+        // บันทึกราคาต้นทุนเสมอถ้ามีการกรอกค่าเข้ามา เพื่อไม่ให้ราคาต้นทุนหลุดหาย
+        if (cost !== undefined && cost !== null && cost !== '') {
+            formData.append('cost_price', cost);
         }
         // Always send image URLs - if no new image, send existing URL to preserve it
         formData.append('image_path', imageUrl);
@@ -2768,7 +2772,9 @@ function exportContextualExcel() {
             label = 'รายงานการขาย (ประวัติบิล)';
         }
     } else if (currentView === 'stock' && currentStockFilter === 'incomplete') {
-        url = '/api/owner/export-excel?filter=incomplete';
+        // ใช้ endpoint /api/staff/products/incomplete แทน /api/owner/products/incomplete
+        // เพื่อหลีกเลี่ยง HTTP 422 และให้ Staff ก็ Export ได้
+        url = '/api/staff/products/incomplete?export=1';
         label = 'สินค้าที่ยังลงข้อมูลไม่ครบ';
     }
 
@@ -2961,17 +2967,17 @@ loadStockTable = function(keyword) {
     var tbody = document.getElementById('stock-body');
     if (!tbody) return;
 
-    var showIncompleteOnly = (currentStockFilter === 'incomplete' && currentRole === 'owner');
+    var showIncompleteOnly = (currentStockFilter === 'incomplete');
     var hint = document.getElementById('incomplete-hint');
     if (hint) {
         if (showIncompleteOnly) hint.classList.remove('hidden');
         else hint.classList.add('hidden');
     }
 
-    tbody.innerHTML = '<tr><td colspan="8" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลด...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลด...</td></tr>';
 
     try {
-        // แท็บ "สินค้ายังลงไม่ครบ": ดึงเฉพาะรายการที่ is_complete = 0 เท่านั้น (ไม่โหลดสินค้าทั้งหมด)
+        // แท็บ "สินค้ายังลงไม่ครบ": ดึงเฉพาะรายการที่ยังลงข้อมูลไม่ครบ
         var url = showIncompleteOnly ? '/api/owner/products/incomplete?' : '/api/staff/products?';
         if (keyword) url += 'keyword=' + encodeURIComponent(keyword) + '&';
 
@@ -2981,14 +2987,10 @@ loadStockTable = function(keyword) {
                 return res.json();
             })
             .then(function(products) {
-                // การันตีขั้นสุดท้ายบน Client: เหลือเฉพาะ is_complete = 0 เท่านั้น
-                if (showIncompleteOnly && Array.isArray(products)) {
-                    products = products.filter(function(p) { return parseInt(p.is_complete) === 0 || p.is_complete === false; });
-                }
                 if (!products || products.length === 0) {
                     tbody.innerHTML = showIncompleteOnly
-                        ? '<tr><td colspan="8" class="empty">🎉 ไม่มีสินค้าที่ยังลงไม่ครบ — ข้อมูลทุกชิ้นสมบูรณ์แล้ว</td></tr>'
-                        : '<tr><td colspan="8" class="empty">ไม่พบรายการสินค้า</td></tr>';
+                        ? '<tr><td colspan="7" class="empty">🎉 ไม่มีสินค้าที่ยังลงไม่ครบ — ข้อมูลทุกชิ้นสมบูรณ์แล้ว</td></tr>'
+                        : '<tr><td colspan="7" class="empty">ไม่พบรายการสินค้า</td></tr>';
                     updateStockSummaryStats(showIncompleteOnly ? [] : (products || []));
                     return;
                 }
@@ -3001,11 +3003,13 @@ loadStockTable = function(keyword) {
                     var stock = parseInt(p.stock_qty) || 0;
                     var minStock = parseInt(p.min_stock) || 5;
                     var price = parseFloat(p.sale_price) || 0;
+                    var cost = parseFloat(p.cost_price || p.latest_cost) || 0;
                     var rawName = p.name || '-';
                     var name = escHtml(rawName);
                     var sku = escHtml(p.sku || '-');
                     var cat = escHtml(p.category || '-');
                     var loc = escHtml(p.location_code || '-');
+                    var locText = p.location ? ('<div style="font-size:11px;color:var(--text-muted);margin-top:2px">' + escHtml(p.location) + '</div>') : '';
                     var imgSrc = p.image_path || p.image_url || '';
                     var locImgSrc = p.location_image_path || p.location_image_url || '';
 
@@ -3016,47 +3020,79 @@ loadStockTable = function(keyword) {
 
                     var stockTag = '<span class="stock-tag ' + stockTagClass + '">' + (stock === 0 ? 'หมด' : stock + ' ชิ้น') + '</span>';
 
+                    // Thumbnail: แตะเพื่อดูรูปขยาย (Lightbox) ได้ทันที
                     var thumbHtml = '';
                     if (imgSrc) {
-                        thumbHtml = '<img src="' + escHtml(imgSrc) + '" class="product-thumb" alt="' + name + '" onerror="this.src=\'/static/images/placeholder.svg\'">';
+                        thumbHtml = '<div class="stock-thumb-wrap" onclick="event.stopPropagation(); openLightbox(\'' + escHtml(imgSrc) + '\', \'' + name + '\');" title="แตะเพื่อดูรูปสินค้าขนาดใหญ่">' +
+                            '<img src="' + escHtml(imgSrc) + '" class="product-thumb zoomable" alt="' + name + '" onerror="this.src=\'/static/images/placeholder.svg\'">' +
+                            '<span class="thumb-zoom-badge"><i class="fa-solid fa-magnifying-glass-plus"></i></span>' +
+                            '</div>';
                     } else {
-                        thumbHtml = '<div class="product-thumb-icon"><i class="fa-solid fa-image"></i></div>';
+                        thumbHtml = '<div class="product-thumb-icon" title="ยังไม่มีรูปภาพสินค้า"><i class="fa-solid fa-image"></i></div>';
                     }
 
+                    // Location Photo Button: แตะเพื่อดูรูปตำแหน่งขยายได้
                     var locPhotoBtn = '';
                     if (locImgSrc) {
-                        locPhotoBtn = '<button class="btn-icon" onclick="event.stopPropagation(); openLocationModal(event,\'' + escHtml(locImgSrc) + '\',\'' + name + '\',\'' + loc + '\');" title="ดูรูปตำแหน่ง"><i class="fa-solid fa-image"></i></button>';
+                        locPhotoBtn = '<button class="btn-icon" onclick="event.stopPropagation(); openLightbox(\'' + escHtml(locImgSrc) + '\', \'รูปตำแหน่งจัดเก็บ: ' + name + ' (' + loc + ')\');" title="แตะเพื่อดูรูปตำแหน่งจัดเก็บ"><i class="fa-solid fa-image" style="color:var(--blue)"></i></button>';
                     } else {
                         locPhotoBtn = '<span style="color:var(--text-muted);font-size:11px">-</span>';
                     }
 
-                    // Quick price edit button (owner only)
-                    var priceCell = '<td class="r" style="font-family:\'Inter\',sans-serif;font-weight:700;color:var(--blue);cursor:pointer" onclick="quickEditPrice(' + p.id + ',' + price + ')" title="คลิกเพื่อแก้ไขราคา">฿' + fmtMoney(price) + ' <i class="fa-solid fa-pen" style="font-size:10px;opacity:0.5"></i></td>';
+                    // Incomplete badge
+                    var isIncomplete = (parseInt(p.is_complete) === 0) || (p.is_complete === false) || !p.sku || price <= 0 || !imgSrc;
+                    var missing = [];
+                    if (!p.sku) missing.push('SKU');
+                    if (price <= 0) missing.push('ราคาขาย');
+                    if (!imgSrc) missing.push('รูปสินค้า');
+                    var incompleteBadge = (isIncomplete || showIncompleteOnly)
+                        ? ' <span class="stock-tag" style="background:#fef3c7;color:#b45309;font-weight:700;font-size:11px" title="ยังขาด: ' + (missing.join(', ') || 'ข้อมูล') + '"><i class="fa-solid fa-triangle-exclamation"></i> ยังลงไม่ครบ' + (missing.length ? ' (' + missing.join('/') + ')' : '') + '</span>'
+                        : '';
 
-                    html += '<tr><td><div class="product-cell">' + thumbHtml +
-                        '<div><div class="product-name-cell">' + name + '</div><div class="product-sku-cell">' + sku + '</div></div></div></td>' +
+                    // Price cell: แสดงทั้งราคาขาย และราคาต้นทุน (เมื่อมีต้นทุน หรือในโหมด owner / incomplete)
+                    var costPill = (cost > 0)
+                        ? '<div style="font-size:11.5px;font-weight:600;color:#059669;margin-top:2px" title="ราคาต้นทุนที่บันทึก"><i class="fa-solid fa-coins"></i> ทุน: ฿' + fmtMoney(cost) + '</div>'
+                        : '';
+                    var priceCell = '<td class="r" style="font-family:\'Inter\',sans-serif">' +
+                        '<div style="font-weight:700;color:var(--blue);cursor:pointer" onclick="event.stopPropagation(); quickEditPrice(' + p.id + ',' + price + ')" title="คลิกเพื่อแก้ไขราคาขาย">฿' + fmtMoney(price) + ' <i class="fa-solid fa-pen" style="font-size:10px;opacity:0.5"></i></div>' +
+                        costPill +
+                        '</td>';
+
+                    var actionBtns = '';
+                    if (showIncompleteOnly) {
+                        actionBtns = '<div class="action-btns">' +
+                            '<button class="btn-primary" style="padding:5px 9px;font-size:11.5px;white-space:nowrap" onclick="event.stopPropagation(); openEditProduct(' + p.id + ')" title="เปิดฟอร์มเติมรูปภาพ/ราคาขาย/SKU"><i class="fa-solid fa-pen-to-square"></i> เติมข้อมูล</button>' +
+                            '<button class="btn-icon" style="color:var(--red)" onclick="event.stopPropagation(); deleteProductDirect(' + p.id + ',\'' + escHtml(rawName) + '\')" title="ลบสินค้า"><i class="fa-solid fa-trash-can"></i></button>' +
+                            '</div>';
+                    } else {
+                        actionBtns = '<div class="action-btns">' +
+                            '<button class="btn-icon" onclick="event.stopPropagation(); transferStock(' + p.id + ',\'' + escHtml(rawName) + '\')" title="ย้ายสต็อก"><i class="fa-solid fa-right-left"></i></button>' +
+                            '<button class="btn-icon" onclick="event.stopPropagation(); openEditProduct(' + p.id + ')" title="แก้ไขสินค้า"><i class="fa-solid fa-pen"></i></button>' +
+                            '<button class="btn-icon" onclick="event.stopPropagation(); addToCart(' + p.id + ',\'' + escHtml(rawName) + '\',' + price + ',' + stock + ',\'' + escHtml(imgSrc) + '\')" title="เพิ่มลงตะกร้า"' + (stock === 0 ? ' disabled' : '') + '>' +
+                            '<i class="fa-solid fa-cart-plus"></i></button>' +
+                            '<button class="btn-icon" style="color:var(--red)" onclick="event.stopPropagation(); deleteProductDirect(' + p.id + ',\'' + escHtml(rawName) + '\')" title="ลบสินค้า"><i class="fa-solid fa-trash-can"></i></button>' +
+                            '</div>';
+                    }
+
+                    html += '<tr class="stock-row" onclick="openProductDetail(' + p.id + ')" style="cursor:pointer" title="แตะเพื่อดูรายละเอียดสินค้า">' +
+                        '<td><div class="product-cell">' + thumbHtml +
+                        '<div style="min-width:0"><div class="product-name-cell">' + name + incompleteBadge + '</div><div class="product-sku-cell">SKU: ' + sku + '</div></div></div></td>' +
                         '<td>' + cat + '</td>' +
-                        '<td><code style="font-size:11px;color:var(--blue)">' + loc + '</code></td>' +
+                        '<td><code style="font-size:11px;color:var(--blue);font-weight:700">📍 ' + loc + '</code>' + locText + '</td>' +
                         '<td class="c">' + stockTag + '</td>' +
                         priceCell +
                         '<td class="c">' + locPhotoBtn + '</td>' +
-                        '<td><div class="action-btns">' +
-                        '<button class="btn-icon" onclick="transferStock(' + p.id + ',\'' + escHtml(rawName) + '\')" title="ย้ายสต็อก"><i class="fa-solid fa-right-left"></i></button>' +
-                        '<button class="btn-icon" onclick="openEditProduct(' + p.id + ')" title="แก้ไข"><i class="fa-solid fa-pen"></i></button>' +
-                        '<button class="btn-icon" onclick="addToCart(' + p.id + ',\'' + escHtml(rawName) + '\',' + price + ',' + stock + ',\'' + escHtml(imgSrc) + '\')" title="เพิ่มลงตะกร้า"' + (stock === 0 ? ' disabled' : '') + '>' +
-                        '<i class="fa-solid fa-cart-plus"></i></button>' +
-                        '<button class="btn-icon" style="color:var(--red)" onclick="deleteProductDirect(' + p.id + ',\'' + escHtml(rawName) + '\')" title="ลบสินค้า"><i class="fa-solid fa-trash-can"></i></button>' +
-                        '</div></td></tr>';
+                        '<td>' + actionBtns + '</td></tr>';
                 }
                 tbody.innerHTML = html;
             })
             .catch(function(err) {
                 console.error('Stock load error:', err);
-                tbody.innerHTML = '<tr><td colspan="8" class="empty" style="color:var(--red)">เกิดข้อผิดพลาด: ' + err.message + '</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" class="empty" style="color:var(--red)">เกิดข้อผิดพลาด: ' + err.message + '</td></tr>';
             });
     } catch (err) {
         console.error('Stock load error:', err);
-        tbody.innerHTML = '<tr><td colspan="8" class="empty" style="color:var(--red)">เกิดข้อผิดพลาด: ' + err.message + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="empty" style="color:var(--red)">เกิดข้อผิดพลาด: ' + err.message + '</td></tr>';
     }
 };
 

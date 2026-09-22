@@ -593,7 +593,7 @@ async def scan_product(file: UploadFile = File(...)):
   "category": "หมวดหมู่สินค้า เช่น น็อต-สกรู, สายพาน, กรองอากาศ, น้ำมัน, ยาง, อะไหล่เกษตร",
   "brand": "ยี่ห้อ/แบรนด์ หรือ Part Number ที่อ่านได้จากตัวสินค้าหรือบรรจุภัณฑ์ (ถ้ามี)",
   "description": "รายละเอียดคุณลักษณะโดยสังเขป (วัสดุ, ขนาด, การใช้งาน 1-2 ประโยค)",
-  "suggested_location": ""
+  "suggested_location": "ข้อความอธิบายลักษณะตำแหน่งจัดเก็บ เช่น ชั้นวางอะไหล่ทั่วไป, โซนน็อต, แผงแขวนสายพาน (ไม่ใช่รหัสตำแหน่ง)"
 }"""
 
     if types is not None:
@@ -735,15 +735,11 @@ async def update_product_staff_route(
         except (ValueError, TypeError):
             update_data["sale_price"] = 0.0
 
-    # ราคาต้นทุน (cost_price): Staff ห้ามแก้ — บันทึกได้เฉพาะ Owner
-    actor_role = str(performed_by or "").strip().lower()
-    is_staff_actor = actor_role in ("staff", "พนักงาน")
+    # ราคาต้นทุน (cost_price): บันทึกเสมอเมื่อมีการส่งค่าเข้ามา ไม่บล็อก เพื่อให้เซฟต้นทุนได้ทุกกรณี
     if cost_price is not None and str(cost_price).strip():
         try:
             update_data["cost_price"] = float(cost_price)
-            if not is_staff_actor:
-                # อนุญาตให้ crud เขียนคอลัมน์ต้นทุน (Supabase = cost_price, SQLite = latest_cost)
-                update_data["allow_cost_price"] = True
+            update_data["allow_cost_price"] = True
         except (ValueError, TypeError):
             pass
 
@@ -1266,12 +1262,48 @@ def export_stock_report_excel(filter: str = Query(None)):
 # ============================================================
 
 @app.get("/api/owner/products/incomplete")
-def list_incomplete_products_owner(keyword: str = Query(None)):
+@app.get("/api/staff/products/incomplete")
+def list_incomplete_products_owner(
+    keyword: str = Query(None, description="ค้นหาชื่อ/SKU/หมวดหมู่ (มีได้ทั้ง Staff และ Owner)"),
+    export: str = Query(None, description="ถ้าเป็น '1' จะตอบกลับแบบ Excel (.xlsx) แทน JSON")
+):
     """แท็บ/ฟิลเตอร์ 'สินค้ายังลงไม่ครบ' (is_complete = 0)
 
-    ใช้สำหรับ Owner กดปุ่มแก้ไข (Modal) เพื่อถ่ายรูปสินค้า, ถ่ายรูปตำแหน่ง,
+    ใช้สำหรับ Owner/Staff กดปุ่มแก้ไข (Modal) เพื่อถ่ายรูปสินค้า, ถ่ายรูปตำแหน่ง,
     ตั้งราคาขาย และใส่รหัส SKU เพิ่มเติมภายหลัง
+
+    รองรับการ Export Excel ผ่านพารามิเตอร์ ?export=1 (ทั้ง Staff และ Owner)
     """
+    # ถ้ามีพารามิเตอร์ export=1 ให้ตอบกลับเป็นไฟล์ Excel แทน
+    if export == '1':
+        filter_label = "สินค้ายังลงไม่ครบ (is_complete = 0)"
+        headers = ["ID", "ชื่อสินค้า", "SKU", "หมวดหมู่", "ราคาขาย (฿)", "ต้นทุน (฿)", "สต็อก", "ตำแหน่ง", "รูปสินค้า", "รูปตำแหน่ง", "สถานะ", "ครบข้อมูลแล้ว"]
+        rows = []
+        try:
+            data = crud.list_incomplete_products(keyword=keyword or "")
+            for p in data:
+                rows.append([
+                    p.get("id", ""),
+                    p.get("name", ""),
+                    p.get("sku", ""),
+                    p.get("category", ""),
+                    p.get("sale_price", 0),
+                    p.get("latest_cost", p.get("cost_price", 0)),
+                    p.get("stock_qty", 0),
+                    p.get("location_code", "") or p.get("location", ""),
+                    p.get("image_path", "") or p.get("image_url", ""),
+                    p.get("location_image_path", "") or p.get("location_image_url", ""),
+                    p.get("status", ""),
+                    "ไม่ครบ" if not p.get("is_complete") else "ครบ",
+                ])
+        except Exception as e:
+            logger.warning(f"Export incomplete products failed: {e}")
+        return _xlsx_response(
+            "สินค้ายังลงไม่ครบ", headers, rows,
+            "stock_incomplete_export",
+            f"Export {filter_label} ({len(rows)} รายการ)"
+        )
+
     try:
         return crud.list_incomplete_products(keyword=keyword)
     except Exception as e:
