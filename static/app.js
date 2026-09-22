@@ -307,12 +307,9 @@ function renderProductCard(p) {
             '<i class="fa-solid fa-plus"></i> เพิ่ม</button>' + locBtn;
     }
 
-    // เมื่อกดที่รูปภาพ หรือ card ทั้งหมด ให้เปิด Lightbox ดูรูปขยาย
-    var openLightboxAttr = imgSrc
-        ? 'onclick="event.stopPropagation(); openLightbox(\'' + escHtml(imgSrc) + '\', \'' + escHtml(rawName) + '\')"'
-        : '';
-
-    return '<div class="product-card" data-id="' + p.id + '" ' + openLightboxAttr + '>' +
+    // หน้า POS: แตะการ์ดสินค้าเพื่อเปิดรายละเอียดตาม Bottom Sheet
+    // จากนั้นแตะรูปใน Bottom Sheet เพื่อดูรูปขนาดใหญ่ได้
+    return '<div class="product-card" data-id="' + p.id + '" onclick="openProductDetail(' + p.id + ')">' +
         '<div class="product-card-img-wrap">' + imgHtml + placeholderHtml +
         '<span class="stock-badge ' + stockBadgeClass + '">' + stockBadgeLabel + '</span></div>' +
         '<div class="product-card-body">' +
@@ -2949,19 +2946,8 @@ async function generateSpec(mode) {
 }
 
 // ==========================================================================
-// ENHANCED PRODUCT CARD - Add click to open detail + edit button in stock
+// PRODUCT CARD DETAIL HANDLER (POS)
 // ==========================================================================
-
-// Override renderProductCard to add click handler for image
-var _origRenderProductCard = renderProductCard;
-renderProductCard = function(p) {
-    var html = _origRenderProductCard(p);
-    // Add click handler on image to open detail
-    var id = p.id;
-    html = html.replace('<div class="product-card" data-id="' + id + '">',
-        '<div class="product-card" data-id="' + id + '" onclick="openProductDetail(' + id + ')">');
-    return html;
-};
 
 // ==========================================================================
 // QUICK PRICE EDIT (Owner Only - Inline Editing in Stock Table)
