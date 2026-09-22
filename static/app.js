@@ -783,16 +783,18 @@ async function loadStockTable(keyword) {
     }
 
     try {
-        // Staff และ Owner ใช้ endpoint เดียวกันสำหรับดึงสินค้ายังลงไม่ครบ
-        // บั๊ก HTTP 422 แก้โดยเปลี่ยนจาก /api/staff/products?is_complete=false เป็น endpoint เฉพาะ
-        var url = showIncompleteOnly
-            ? '/api/staff/products/incomplete?'
-            : '/api/staff/products?';
+        // "ยังลงไม่ครบ" ตรวจจากการมีรูปสินค้าเท่านั้น
+        var url = '/api/staff/products?';
         if (keyword) url += 'keyword=' + encodeURIComponent(keyword) + '&';
 
         var res = await fetch(url);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         var products = await res.json();
+        if (showIncompleteOnly) {
+            products = (products || []).filter(function(product) {
+                return !product.image_url || product.image_url === '';
+            });
+        }
 
         if (!products || products.length === 0) {
             tbody.innerHTML = showIncompleteOnly
@@ -838,10 +840,8 @@ async function loadStockTable(keyword) {
                 locPhotoBtn = '<span style="color:var(--text-muted);font-size:11px">-</span>';
             }
 
-            var isIncomplete = (parseInt(p.is_complete) === 0) || (p.is_complete === false);
-            var incompleteBadge = isIncomplete
-                ? ' <span class="stock-tag" style="background:#fef3c7;color:#b45309;font-weight:700" title="ยังขาดรูปสินค้า/รูปตำแหน่ง/ราคาขาย/SKU"><i class="fa-solid fa-triangle-exclamation"></i> ยังลงไม่ครบ</span>'
-                : '';
+            // ไม่แสดงป้ายเตือนสถานะข้อมูลในตารางคลังสินค้า
+            var incompleteBadge = '';
 
             html += '<tr><td><div class="product-cell">' + thumbHtml +
                 '<div><div class="product-name-cell">' + name + incompleteBadge + '</div><div class="product-sku-cell">' + sku + '</div></div></div></td>' +
@@ -868,7 +868,7 @@ async function loadStockTable(keyword) {
 /**
  * สลับตัวกรองหน้าคลังสินค้า (Staff และ Owner)
  * - 'all'        : สินค้าทั้งหมด
- * - 'incomplete' : เฉพาะสินค้าที่ยังลงไม่ครบ (is_complete = 0) เพื่อกดปุ่มแก้ไขเติมข้อมูล
+ * - 'incomplete' : เฉพาะสินค้าที่ไม่มีรูปสินค้า เพื่อกดปุ่มเติมรูปภาพ
  *                  Staff ใช้ตรวจสอบสินค้าที่ยังขาดข้อมูลได้ (ไม่เห็นต้นทุน)
  */
 function switchStockFilter(filter) {
@@ -890,12 +890,13 @@ async function refreshIncompleteBadge() {
     var badge = document.getElementById('incomplete-count-badge');
     if (!badge) return;
     try {
-        // ใช้ endpoint /api/staff/products/incomplete ได้ทั้ง Staff และ Owner
-        // ไม่ต้องใช้ /api/owner/products/incomplete ที่อาจเกิด HTTP 422
-        var res = await fetch('/api/staff/products/incomplete');
+        // "ยังลงไม่ครบ" หมายถึงไม่มีรูปสินค้าเท่านั้น
+        var res = await fetch('/api/staff/products');
         if (!res.ok) throw new Error('HTTP ' + res.status);
         var list = await res.json();
-        badge.textContent = (list && list.length) ? list.length : 0;
+        badge.textContent = (list || []).filter(function(product) {
+            return !product.image_url || product.image_url === '';
+        }).length;
     } catch (e) {
         badge.textContent = '0';
     }
@@ -2637,11 +2638,12 @@ function openProductDetail(productId) {
                 }
             }
 
-            // Tags
-            var tagsHtml = '';
-            if (p.category) tagsHtml += '<span class="detail-tag">' + escHtml(p.category) + '</span>';
-            if (p.location_code) tagsHtml += '<span class="detail-tag">📍 ' + escHtml(p.location_code) + '</span>';
-            if (p.location) tagsHtml += '<span class="detail-tag">🏪 ' + escHtml(p.location) + '</span>';
+            // หมวดหมู่และตำแหน่งอยู่ด้านขวาของรูปตาม Layout รายละเอียดสินค้า
+            var tagsHtml = '<span class="detail-category">หมวดหมู่: ' + escHtml(p.category || '-') + '</span>';
+            if (p.location_code || p.location) {
+                tagsHtml += '<span class="detail-tag"><i class="fa-solid fa-location-dot"></i> ' +
+                    escHtml(p.location_code || p.location) + '</span>';
+            }
             document.getElementById('detail-tags').innerHTML = tagsHtml;
 
             // รูปตำแหน่งจัดเก็บ (แตะเพื่อขยาย) — ซ่อนถ้าไม่มีรูป
@@ -2678,7 +2680,9 @@ function openProductDetail(productId) {
             if ((p.stock_qty || 0) <= (p.min_stock || 5)) descText += '⚠️ สินค้าใกล้หมดสต็อก!';
             descEl.textContent = descText || 'ไม่มีข้อมูลเพิ่มเติม';
 
-            document.getElementById('detail-add-btn').onclick = function() {
+            var detailAddBtn = document.getElementById('detail-add-btn');
+            detailAddBtn.innerHTML = '<i class="fa-solid fa-cart-shopping"></i> เพิ่มลงตระกร้า';
+            detailAddBtn.onclick = function() {
                 addToCart(p.id, p.name, p.sale_price || 0, p.stock_qty || 0, p.image_path || p.image_url || '');
                 closeModal('modal-detail');
             };
@@ -2977,8 +2981,8 @@ loadStockTable = function(keyword) {
     tbody.innerHTML = '<tr><td colspan="7" class="empty"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลด...</td></tr>';
 
     try {
-        // แท็บ "สินค้ายังลงไม่ครบ": ดึงเฉพาะรายการที่ยังลงข้อมูลไม่ครบ
-        var url = showIncompleteOnly ? '/api/owner/products/incomplete?' : '/api/staff/products?';
+        // โหลดทั้งหมดแล้วคัดรายการที่ยังลงไม่ครบตามรูปสินค้าเท่านั้น
+        var url = '/api/staff/products?';
         if (keyword) url += 'keyword=' + encodeURIComponent(keyword) + '&';
 
         fetch(url)
@@ -2987,6 +2991,12 @@ loadStockTable = function(keyword) {
                 return res.json();
             })
             .then(function(products) {
+                products = products || [];
+                if (showIncompleteOnly) {
+                    products = products.filter(function(product) {
+                        return !product.image_url || product.image_url === '';
+                    });
+                }
                 if (!products || products.length === 0) {
                     tbody.innerHTML = showIncompleteOnly
                         ? '<tr><td colspan="7" class="empty">🎉 ไม่มีสินค้าที่ยังลงไม่ครบ — ข้อมูลทุกชิ้นสมบูรณ์แล้ว</td></tr>'
@@ -3039,15 +3049,8 @@ loadStockTable = function(keyword) {
                         locPhotoBtn = '<span style="color:var(--text-muted);font-size:11px">-</span>';
                     }
 
-                    // Incomplete badge
-                    var isIncomplete = (parseInt(p.is_complete) === 0) || (p.is_complete === false) || !p.sku || price <= 0 || !imgSrc;
-                    var missing = [];
-                    if (!p.sku) missing.push('SKU');
-                    if (price <= 0) missing.push('ราคาขาย');
-                    if (!imgSrc) missing.push('รูปสินค้า');
-                    var incompleteBadge = (isIncomplete || showIncompleteOnly)
-                        ? ' <span class="stock-tag" style="background:#fef3c7;color:#b45309;font-weight:700;font-size:11px" title="ยังขาด: ' + (missing.join(', ') || 'ข้อมูล') + '"><i class="fa-solid fa-triangle-exclamation"></i> ยังลงไม่ครบ' + (missing.length ? ' (' + missing.join('/') + ')' : '') + '</span>'
-                        : '';
+                    // ตารางคลังไม่แสดงป้ายเตือน "ยังลงไม่ครบ" รายสินค้า
+                    var incompleteBadge = '';
 
                     // Price cell: แสดงทั้งราคาขาย และราคาต้นทุน (เมื่อมีต้นทุน หรือในโหมด owner / incomplete)
                     var costPill = (cost > 0)
