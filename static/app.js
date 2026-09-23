@@ -197,6 +197,13 @@ function applyRole(role) {
         if (isOwner) ownerEls[i].classList.remove('hidden');
         else ownerEls[i].classList.add('hidden');
     }
+
+    // ราคาต้นทุนเป็นข้อมูล Owner เท่านั้น: ซ่อนทุกครั้งที่อยู่โหมด Staff
+    var costGroups = ['cost-field-group', 'cost-edit-field-group'];
+    for (var j = 0; j < costGroups.length; j++) {
+        var costGroup = document.getElementById(costGroups[j]);
+        if (costGroup) costGroup.classList.toggle('hidden', !isOwner);
+    }
 }
 
 // ==========================================================================
@@ -1606,7 +1613,9 @@ async function submitAdd(event) {
         formData.append('location', locationText);
         formData.append('sale_price', price);
         formData.append('description', desc);
-        if (cost !== undefined && cost !== null && cost !== '') formData.append('cost_price', cost);
+        if (currentRole === 'owner' && cost !== undefined && cost !== null && cost !== '') {
+            formData.append('cost_price', cost);
+        }
         if (imageUrl) formData.append('image_path', imageUrl);
         if (locationImageUrl) formData.append('location_image_path', locationImageUrl);
         if (prodImageFile) formData.append('file', prodImageFile);
@@ -2298,13 +2307,14 @@ function openEditProduct(productId) {
     if (phLoc) phLoc.classList.remove('hidden');
 
     // Fetch product data
-    // Owner: ใช้ endpoint ของ Owner เพื่อให้ได้ 'ราคาต้นทุน' (cost_price) มาเติมในช่องจริง
-    //        (endpoint ของ Staff จะตัดต้นทุนออกเพื่อความปลอดภัย ทำให้ช่องต้นทุนว่างและหลุดเป็น 0)
-    // ดึงข้อมูลสินค้า (ลอง endpoint owner ก่อนเพื่อให้ได้ cost_price เสมอ)
-    fetch('/api/owner/products/' + productId)
+    // Staff ต้องใช้ endpoint ที่ไม่มีราคาต้นทุนเสมอ
+    var productUrl = (currentRole === 'owner')
+        ? '/api/owner/products/' + productId
+        : '/api/staff/products/' + productId;
+    fetch(productUrl)
         .then(function(res) {
-            if (res.ok) return res.json();
-            return fetch('/api/staff/products/' + productId).then(function(r) { return r.json(); });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
         })
         .then(function(p) {
             document.getElementById('e-id').value = p.id || '';
@@ -2325,7 +2335,9 @@ function openEditProduct(productId) {
             var eWarehouseStock = document.getElementById('e-warehouse-stock');
             if (eWarehouseStock) eWarehouseStock.value = p.warehouse_stock !== undefined ? p.warehouse_stock : 0;
             var eCost = document.getElementById('e-cost');
-            if (eCost) eCost.value = p.cost_price !== undefined ? p.cost_price : (p.latest_cost || '');
+            if (eCost) eCost.value = currentRole === 'owner'
+                ? (p.cost_price !== undefined ? p.cost_price : (p.latest_cost || ''))
+                : '';
 
             // Store existing image URLs for fallback when saving
             editExistingImageUrl = p.image_path || p.image_url || '';
@@ -2514,8 +2526,8 @@ async function submitEdit(event) {
         formData.append('location', location);
         formData.append('description', desc);
         formData.append('sale_price', price);
-        // บันทึกราคาต้นทุนเสมอถ้ามีการกรอกค่าเข้ามา เพื่อไม่ให้ราคาต้นทุนหลุดหาย
-        if (cost !== undefined && cost !== null && cost !== '') {
+        // เฉพาะ Owner เท่านั้นที่ส่ง/แก้ไขราคาต้นทุนได้
+        if (currentRole === 'owner' && cost !== undefined && cost !== null && cost !== '') {
             formData.append('cost_price', cost);
         }
         // Always send image URLs - if no new image, send existing URL to preserve it
@@ -3078,8 +3090,8 @@ loadStockTable = function(keyword) {
                     // ตารางคลังไม่แสดงป้ายเตือน "ยังลงไม่ครบ" รายสินค้า
                     var incompleteBadge = '';
 
-                    // Price cell: แสดงทั้งราคาขาย และราคาต้นทุน (เมื่อมีต้นทุน หรือในโหมด owner / incomplete)
-                    var costPill = (cost > 0)
+                    // ราคาต้นทุนแสดงเฉพาะ Owner เท่านั้น
+                    var costPill = (currentRole === 'owner' && cost > 0)
                         ? '<div style="font-size:11.5px;font-weight:600;color:#059669;margin-top:2px" title="ราคาต้นทุนที่บันทึก"><i class="fa-solid fa-coins"></i> ทุน: ฿' + fmtMoney(cost) + '</div>'
                         : '';
                     var priceCell = '<td class="r" style="font-family:\'Inter\',sans-serif">' +

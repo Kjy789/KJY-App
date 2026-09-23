@@ -2827,3 +2827,87 @@ input, select, textarea {
 @media (min-width: 481px) and (max-width: 768px) {
     .product-grid { grid-template-columns: repeat(3, 1fr) !important; }
 }
+
+/* ============================================================
+   REPORTS — balanced layouts for phone, iPad and desktop
+   ============================================================ */
+#view-reports { min-width: 0; }
+#view-reports .view-head .hstack { flex-wrap: wrap; justify-content: flex-end; }
+#view-reports .table-card { min-width: 0; min-height: 0; }
+#view-reports .table-scroll {
+    overscroll-behavior-x: contain;
+    scrollbar-color: #cbd5e1 transparent;
+}
+
+@media (min-width: 769px) and (max-width: 1199px) {
+    #view-reports .view-head { padding: 15px 18px 12px; }
+    #view-reports .report-tabs { margin: 0 18px 14px; }
+    #view-reports .report-tabs button { flex-basis: 180px; font-size: 12px; }
+    #product-stats-cards,
+    #finance-stats-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #view-reports .stats { padding-left: 18px; padding-right: 18px; }
+    #view-reports .table-card { margin-left: 18px; margin-right: 18px; }
+}
+
+@media (max-width: 768px) {
+    #view-reports .view-head {
+        align-items: stretch;
+        padding: 14px 14px 12px;
+    }
+    #view-reports .view-head h2 { font-size: 17px; }
+    #view-reports .view-head .hstack {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+        gap: 8px;
+    }
+    #view-reports .view-head .hstack > * {
+        width: 100%;
+        min-width: 0;
+        justify-content: center;
+        padding-left: 8px;
+        padding-right: 8px;
+        font-size: 12px;
+    }
+    #view-reports .view-head .hstack > :last-child { grid-column: 1 / -1; }
+    #view-reports .report-tabs {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(148px, 1fr));
+        flex: 0 0 auto;
+        overflow-x: auto;
+        margin: 0 14px 12px;
+        padding: 1px 1px 5px;
+        gap: 8px;
+        scrollbar-width: thin;
+    }
+    #view-reports .report-tabs button {
+        width: auto;
+        min-height: 42px;
+        font-size: 12px;
+        white-space: normal;
+        line-height: 1.25;
+    }
+    #sales-stats-cards,
+    #product-stats-cards,
+    #finance-stats-cards {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        padding: 10px 14px;
+        gap: 8px;
+    }
+    #view-reports .stat-card { min-width: 0; padding: 12px; gap: 9px; }
+    #view-reports .stat-icon { width: 34px; height: 34px; font-size: 15px; }
+    #view-reports .stat-card small { font-size: 9px; letter-spacing: 0; }
+    #view-reports .stat-card h3 { font-size: 14px; overflow-wrap: anywhere; }
+    #view-reports .table-card { margin: 10px 14px 12px; border-radius: 14px; }
+    #view-reports .table-head { padding: 12px 14px; }
+    #view-reports .table-head h3 { font-size: 13px; line-height: 1.45; }
+    #view-reports .data-table { min-width: 600px; }
+}
+
+@media (max-width: 420px) {
+    #sales-stats-cards,
+    #product-stats-cards,
+    #finance-stats-cards { grid-template-columns: 1fr; }
+    #view-reports .stat-card { padding: 11px 13px; }
+    #view-reports .report-tabs { grid-template-columns: repeat(3, minmax(136px, 1fr)); }
+}
