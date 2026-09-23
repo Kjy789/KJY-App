@@ -536,11 +536,19 @@ body {
     padding: 10px 20px;
     border-bottom: 1px solid var(--border);
     overflow-x: auto;
+    overflow-y: hidden;
     flex-shrink: 0;
     display: flex;
     gap: 8px;
-    min-width: max-content;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     background: white;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x;
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent;
 }
 
 .chip {
