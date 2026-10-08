@@ -134,6 +134,12 @@ function switchView(view) {
         else layoutEl.classList.remove('cart-hidden');
     }
 
+    // ซ่อนปุ่มผู้ช่วย AI บนหน้ารายงานเพื่อไม่ให้บังตารางและปุ่มบนจอมือถือ
+    var salesFab = document.getElementById('sales-fab');
+    if (salesFab) {
+        salesFab.style.display = (view === 'reports') ? 'none' : '';
+    }
+
     var allViews = document.querySelectorAll('.view');
     for (var i = 0; i < allViews.length; i++) { allViews[i].classList.remove('active'); }
 
